@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: polsia
+      POSTGRES_PASSWORD: polsia
+      POSTGRES_DB: polsia
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polsia"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      POLSIA_DATABASE_URL: postgresql+asyncpg://polsia:polsia@postgres:5432/polsia
+      POLSIA_JWT_SECRET: dev-only-secret-change-me
+      POLSIA_ENV: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn polsia.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes:
+      - ./:/app
+
+volumes:
+  pgdata:

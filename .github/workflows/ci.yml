@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check polsia tests scripts && ruff format --check polsia tests scripts
+      - name: Layer boundaries
+        run: python scripts/check_layering.py
+      - name: Typecheck
+        run: mypy polsia
+      - name: Test
+        run: python -m pytest
+        env:
+          POLSIA_DATABASE_URL: "sqlite+aiosqlite://"
+          POLSIA_JWT_SECRET: ci-secret
