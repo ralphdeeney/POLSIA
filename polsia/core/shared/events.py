@@ -4,6 +4,7 @@ This is the *contract* for all Polsia domain events (ADR-0004). The envelope
 is stable: an in-process bus ships in Phase 1 and a durable bus may replace
 it in Phase 2 without changing services or consumers.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -40,6 +41,13 @@ class EventEnvelope:
     """
 
     __slots__ = ("id", "type", "occurred_at", "organization_id", "company_id", "payload")
+
+    id: EventId
+    type: str
+    occurred_at: dt.datetime
+    organization_id: OrganizationId | None
+    company_id: CompanyId | None
+    payload: dict[str, Any]
 
     def __init__(
         self,

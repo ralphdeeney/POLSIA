@@ -4,6 +4,7 @@ Each entity id is a distinct string type so IDs cannot be mixed accidentally
 (mypy strict catches it). Format: `<prefix>_<ULID>` — e.g. ``usr_01J...``.
 ULIDs are lexicographically sortable by creation time.
 """
+
 from __future__ import annotations
 
 from typing import TypeVar

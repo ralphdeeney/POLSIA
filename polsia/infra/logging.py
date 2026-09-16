@@ -1,4 +1,5 @@
 """structlog configuration: JSON logs in production, pretty console in dev."""
+
 from __future__ import annotations
 
 import logging

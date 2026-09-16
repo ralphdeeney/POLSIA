@@ -4,6 +4,7 @@ Domain errors are raised by core entities/services; the API layer translates
 them into RFC 9457 problem-details responses. Adapters translate their own
 infrastructure errors into these before crossing the boundary.
 """
+
 from __future__ import annotations
 
 

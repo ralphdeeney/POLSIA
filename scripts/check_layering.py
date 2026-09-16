@@ -2,6 +2,7 @@
 
 Run: python scripts/check_layering.py  (exit 1 on violation)
 """
+
 from __future__ import annotations
 
 import ast
