@@ -84,7 +84,13 @@ def install_error_handlers(app: FastAPI, *, hide_internals: bool = True) -> None
             code=code,
             detail=str(exc.detail) if exc.detail else code,
         )
-        return _problem_response(body)
+        # Preserve headers attached to the HTTPException (e.g. WWW-Authenticate).
+        return JSONResponse(
+            status_code=body["status"],
+            content=body,
+            media_type=PROBLEM_CONTENT_TYPE,
+            headers=dict(exc.headers) if exc.headers else None,
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:

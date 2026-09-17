@@ -77,6 +77,9 @@ class PyJWTTokenIssuer:
         iat = payload.get("iat")
         if not isinstance(sub, str) or not isinstance(typ, str):
             raise InvalidCredentials("malformed token payload")
+        # `exp` is mandatory at verify: a token without it would never expire.
+        if not isinstance(exp, int):
+            raise InvalidCredentials("malformed token payload")
         if expected_typ is not None and typ != expected_typ:
             raise InvalidCredentials("invalid or expired token")
         try:

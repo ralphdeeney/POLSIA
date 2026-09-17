@@ -284,7 +284,9 @@ class SqlAlchemyCompanyRepository:
 
     async def update(self, company: Company) -> None:
         row = await self._session.get(CompanyModel, str(company.id))
-        if row is None:
+        if row is None or row.organization_id != str(company.organization_id):
+            # Defense-in-depth: never update a row outside the caller's org
+            # scope, even if a caller skips the scoped lookup (IDOR guard).
             raise NotFoundError(f"company {company.id} not found")
         row.name = company.name
         row.slug = company.slug
