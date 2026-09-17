@@ -5,6 +5,7 @@ from polsia.api.routers.companies import router as companies_router
 from polsia.api.routers.goals import router as goals_router
 from polsia.api.routers.kpis import router as kpis_router
 from polsia.api.routers.organizations import router as organizations_router
+from polsia.api.routers.permissions import permissions_router
 from polsia.api.routers.registries import (
     agents_router,
     models_router,
@@ -22,6 +23,7 @@ __all__ = [
     "kpis_router",
     "models_router",
     "organizations_router",
+    "permissions_router",
     "skills_router",
     "tasks_router",
     "tools_router",

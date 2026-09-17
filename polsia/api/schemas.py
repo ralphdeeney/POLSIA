@@ -8,7 +8,7 @@ stay plain dataclasses. Conversion happens in the routers via
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -460,5 +460,77 @@ class ModelOut(BaseModel):
     status: str
     capabilities: list[str]
     configuration: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+# -- Phase 2: permissions + approvals ------------------------------------------
+
+from polsia.core.permissions.values import PermissionDecision  # noqa: E402
+
+
+class PermissionSet(BaseModel):
+    principal_type: str = Field(min_length=1, max_length=100)
+    principal_id: str | None = Field(default=None, max_length=255)
+    resource_type: str = Field(min_length=1, max_length=100)
+    resource_id: str | None = Field(default=None, max_length=255)
+    action: str = Field(min_length=1, max_length=255)
+    decision: PermissionDecision
+    constraints: dict[str, Any] | None = None
+
+
+class PermissionCheck(BaseModel):
+    principal_type: str = Field(min_length=1, max_length=100)
+    principal_id: str | None = Field(default=None, max_length=255)
+    resource_type: str = Field(min_length=1, max_length=100)
+    resource_id: str | None = Field(default=None, max_length=255)
+    action: str = Field(min_length=1, max_length=255)
+
+
+class PermissionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    principal_type: str
+    principal_id: str | None
+    resource_type: str
+    resource_id: str | None
+    action: str
+    decision: str
+    constraints: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ApprovalCreate(BaseModel):
+    requested_by: str
+    action: str = Field(min_length=1, max_length=255)
+    resource_type: str = Field(min_length=1, max_length=100)
+    resource_id: str | None = Field(default=None, max_length=255)
+    reason: str | None = Field(default=None, max_length=2000)
+    expires_at: dt.datetime | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class ApprovalDecide(BaseModel):
+    decision: Literal["approved", "rejected"]
+
+
+class ApprovalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    requested_by: str
+    action: str
+    resource_type: str
+    resource_id: str | None
+    reason: str | None
+    status: str
+    expires_at: dt.datetime | None
+    decided_by: str | None
+    decided_at: dt.datetime | None
+    metadata: dict[str, Any]
     created_at: dt.datetime
     updated_at: dt.datetime

@@ -25,6 +25,10 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from polsia.adapters.persistence.permission_repositories import (
+    SqlAlchemyApprovalRepository,
+    SqlAlchemyPermissionRepository,
+)
 from polsia.adapters.persistence.registry_repositories import (
     SqlAlchemyAgentRepository,
     SqlAlchemyModelRepository,
@@ -63,6 +67,7 @@ from polsia.core.shared.ids import (
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
+from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService, KpiService
 from polsia.services.registries import AgentService, ModelService, SkillService, ToolService
 from polsia.services.tasks import ExecutionService, TaskService
@@ -427,3 +432,49 @@ async def get_model_service(request: Request, session: SessionDep) -> ModelServi
 SkillServiceDep = Annotated[SkillService, Depends(get_skill_service)]
 ToolServiceDep = Annotated[ToolService, Depends(get_tool_service)]
 ModelServiceDep = Annotated[ModelService, Depends(get_model_service)]
+
+
+# -- Phase 2: permission services -------------------------------------------------
+
+
+def get_permission_service(request: Request, session: SessionDep) -> PermissionService:
+    injected = _services(request).get("permissions")
+    if injected is not None:
+        return cast(PermissionService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return PermissionService(
+        permissions=SqlAlchemyPermissionRepository(session),
+        approvals=SqlAlchemyApprovalRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+PermissionServiceDep = Annotated[PermissionService, Depends(get_permission_service)]
+
+
+def get_approval_service(request: Request, session: SessionDep) -> ApprovalService:
+    injected = _services(request).get("approvals")
+    if injected is not None:
+        return cast(ApprovalService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return ApprovalService(
+        approvals=SqlAlchemyApprovalRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+ApprovalServiceDep = Annotated[ApprovalService, Depends(get_approval_service)]
