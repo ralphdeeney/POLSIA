@@ -25,6 +25,12 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from polsia.adapters.persistence.registry_repositories import (
+    SqlAlchemyAgentRepository,
+    SqlAlchemyModelRepository,
+    SqlAlchemySkillRepository,
+    SqlAlchemyToolRepository,
+)
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
     SqlAlchemyGoalRepository,
@@ -58,6 +64,7 @@ from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
 from polsia.services.planning import GoalService, KpiService
+from polsia.services.registries import AgentService, ModelService, SkillService, ToolService
 from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.tenancy import CompanyService, OrganizationService
 
@@ -352,3 +359,71 @@ def get_execution_service(request: Request, session: SessionDep) -> ExecutionSer
 
 
 ExecutionServiceDep = Annotated[ExecutionService, Depends(get_execution_service)]
+
+
+# -- Phase 2: registry services --------------------------------------------------
+
+
+def get_agent_service(request: Request, session: SessionDep) -> AgentService:
+    injected = _services(request).get("agents")
+    if injected is not None:
+        return cast(AgentService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return AgentService(
+        agents=SqlAlchemyAgentRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+AgentServiceDep = Annotated[AgentService, Depends(get_agent_service)]
+
+
+async def get_skill_service(request: Request, session: SessionDep) -> SkillService:
+    injected = _services(request).get("skills")
+    if injected is not None:
+        return cast(SkillService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return SkillService(skills=SqlAlchemySkillRepository(session), bus=bus)
+
+
+async def get_tool_service(request: Request, session: SessionDep) -> ToolService:
+    injected = _services(request).get("tools")
+    if injected is not None:
+        return cast(ToolService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return ToolService(tools=SqlAlchemyToolRepository(session), bus=bus)
+
+
+async def get_model_service(request: Request, session: SessionDep) -> ModelService:
+    injected = _services(request).get("models")
+    if injected is not None:
+        return cast(ModelService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return ModelService(models=SqlAlchemyModelRepository(session), bus=bus)
+
+
+SkillServiceDep = Annotated[SkillService, Depends(get_skill_service)]
+ToolServiceDep = Annotated[ToolService, Depends(get_tool_service)]
+ModelServiceDep = Annotated[ModelService, Depends(get_model_service)]

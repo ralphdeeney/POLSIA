@@ -31,13 +31,17 @@ from polsia.adapters.security.tokens import PyJWTTokenIssuer
 from polsia.api.context import RequestContextMiddleware
 from polsia.api.errors import install_error_handlers
 from polsia.api.routers import (
+    agents_router,
     auth_router,
     companies_router,
     executions_router,
     goals_router,
     kpis_router,
+    models_router,
     organizations_router,
+    skills_router,
     tasks_router,
+    tools_router,
 )
 from polsia.infra.logging import configure_logging, get_logger
 from polsia.infra.settings import Settings, get_settings
@@ -116,6 +120,10 @@ def create_app(
             kpis_router,
             tasks_router,
             executions_router,
+            agents_router,
+            skills_router,
+            tools_router,
+            models_router,
         )
     else:
         app.state.event_bus = None

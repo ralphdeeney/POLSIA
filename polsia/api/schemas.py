@@ -299,3 +299,166 @@ class ExecutionComplete(BaseModel):
 
 class ExecutionFail(BaseModel):
     error: str | None = Field(default=None, max_length=2000)
+
+
+# -- Phase 2: registries (agents, skills, tools, models) -----------------------
+
+from polsia.core.registry.values import RegistryStatus  # noqa: E402
+
+
+class AgentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    type: str = Field(default="generic", max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    model_reference: str | None = Field(default=None, max_length=255)
+    system_instructions: str | None = Field(default=None, max_length=4000)
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class AgentUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    type: str | None = Field(default=None, max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    model_reference: str | None = Field(default=None, max_length=255)
+    system_instructions: str | None = Field(default=None, max_length=4000)
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class AgentStatusChange(BaseModel):
+    status: RegistryStatus
+
+
+class AgentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    name: str
+    type: str
+    description: str | None
+    status: str
+    model_reference: str | None
+    system_instructions: str | None
+    capabilities: list[str]
+    configuration: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class SkillCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=3, max_length=20)
+    description: str | None = Field(default=None, max_length=2000)
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    required_capabilities: list[str] | None = None
+    required_tools: list[str] | None = None
+    required_permissions: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class SkillUpdate(BaseModel):
+    description: str | None = Field(default=None, max_length=2000)
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    required_capabilities: list[str] | None = None
+    required_tools: list[str] | None = None
+    required_permissions: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class SkillStatusChange(BaseModel):
+    status: RegistryStatus
+
+
+class SkillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    version: str
+    description: str | None
+    status: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    required_capabilities: list[str]
+    required_tools: list[str]
+    required_permissions: list[str]
+    configuration: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ToolCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=3, max_length=20)
+    description: str | None = Field(default=None, max_length=2000)
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class ToolUpdate(BaseModel):
+    description: str | None = Field(default=None, max_length=2000)
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class ToolStatusChange(BaseModel):
+    status: RegistryStatus
+
+
+class ToolOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    version: str
+    description: str | None
+    status: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+    capabilities: list[str]
+    configuration: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ModelCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    version: str = Field(min_length=3, max_length=20)
+    provider: str = Field(default="generic", max_length=100)
+    description: str | None = Field(default=None, max_length=2000)
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class ModelUpdate(BaseModel):
+    description: str | None = Field(default=None, max_length=2000)
+    provider: str | None = Field(default=None, max_length=100)
+    capabilities: list[str] | None = None
+    configuration: dict[str, Any] | None = None
+
+
+class ModelStatusChange(BaseModel):
+    status: RegistryStatus
+
+
+class ModelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    version: str
+    provider: str
+    description: str | None
+    status: str
+    capabilities: list[str]
+    configuration: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
