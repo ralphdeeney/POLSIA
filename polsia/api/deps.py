@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
+    SqlAlchemyGoalRepository,
+    SqlAlchemyKpiRepository,
     SqlAlchemyMembershipRepository,
     SqlAlchemyOrganizationRepository,
     SqlAlchemyUserRepository,
@@ -42,6 +44,7 @@ from polsia.core.shared.ids import CompanyId, OrganizationId, UserId
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
+from polsia.services.planning import GoalService, KpiService
 from polsia.services.tenancy import CompanyService, OrganizationService
 
 bearer_scheme = HTTPBearer(auto_error=False, description="JWT access token")
@@ -174,6 +177,52 @@ def get_company_service(request: Request, session: SessionDep) -> CompanyService
 
 
 CompanyServiceDep = Annotated[CompanyService, Depends(get_company_service)]
+
+
+# -- Phase 2: planning services -------------------------------------------------
+
+
+def get_goal_service(request: Request, session: SessionDep) -> GoalService:
+    injected = _services(request).get("goals")
+    if injected is not None:
+        return cast(GoalService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return GoalService(
+        goals=SqlAlchemyGoalRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+GoalServiceDep = Annotated[GoalService, Depends(get_goal_service)]
+
+
+def get_kpi_service(request: Request, session: SessionDep) -> KpiService:
+    injected = _services(request).get("kpis")
+    if injected is not None:
+        return cast(KpiService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return KpiService(
+        kpis=SqlAlchemyKpiRepository(session),
+        goals=SqlAlchemyGoalRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+KpiServiceDep = Annotated[KpiService, Depends(get_kpi_service)]
 
 
 # -- Path/id parsing ------------------------------------------------------------

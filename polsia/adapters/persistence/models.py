@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     MetaData,
     String,
@@ -132,3 +133,62 @@ class CompanyModel(Base):
     __table_args__ = (
         UniqueConstraint("organization_id", "slug", name="uq_companies_organization_id_slug"),
     )
+
+
+# -- Phase 2: planning (goals, KPIs) -------------------------------------------
+
+
+class GoalModel(Base):
+    __tablename__ = "goals"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    company_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("companies.id", name="fk_goals_company_id_companies"),
+        nullable=False,
+        index=True,
+    )
+    parent_goal_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    priority: Mapped[str] = mapped_column(String(20), nullable=False)
+    due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("company_id", "title", name="uq_goals_company_id_title"),)
+
+
+class KpiModel(Base):
+    __tablename__ = "kpis"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    company_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("companies.id", name="fk_kpis_company_id_companies"),
+        nullable=False,
+        index=True,
+    )
+    goal_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_value: Mapped[float] = mapped_column(Float, nullable=False)
+    current_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("company_id", "name", name="uq_kpis_company_id_name"),)

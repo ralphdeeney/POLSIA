@@ -30,7 +30,13 @@ from polsia.adapters.security.passwords import BcryptPasswordHasher
 from polsia.adapters.security.tokens import PyJWTTokenIssuer
 from polsia.api.context import RequestContextMiddleware
 from polsia.api.errors import install_error_handlers
-from polsia.api.routers import auth_router, companies_router, organizations_router
+from polsia.api.routers import (
+    auth_router,
+    companies_router,
+    goals_router,
+    kpis_router,
+    organizations_router,
+)
 from polsia.infra.logging import configure_logging, get_logger
 from polsia.infra.settings import Settings, get_settings
 
@@ -99,7 +105,9 @@ def create_app(
             bus = InProcessEventBus()
             bus.subscribe("*", LoggingSubscriber())
         app.state.event_bus = bus
-        mount_routers(app, auth_router, organizations_router, companies_router)
+        mount_routers(
+            app, auth_router, organizations_router, companies_router, goals_router, kpis_router
+        )
     else:
         app.state.event_bus = None
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from polsia.core.planning.values import GoalStatus, KpiDirection, Priority
 from polsia.core.tenancy.values import CompanyStatus, MembershipRole
 
 
@@ -123,5 +124,86 @@ class CompanyOut(BaseModel):
     strategy: dict[str, Any]
     configuration: dict[str, Any]
     status: str
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+# -- Phase 2: planning (goals, KPIs) ------------------------------------------
+
+
+class GoalCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    parent_goal_id: str | None = None
+    priority: Priority = Priority.MEDIUM
+    due_at: dt.datetime | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class GoalUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    priority: Priority | None = None
+    due_at: dt.datetime | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class GoalStatusChange(BaseModel):
+    status: GoalStatus
+
+
+class GoalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    title: str
+    description: str | None
+    parent_goal_id: str | None
+    status: str
+    priority: str
+    due_at: dt.datetime | None
+    metadata: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class KpiCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    direction: KpiDirection
+    target_value: float
+    goal_id: str | None = None
+    description: str | None = Field(default=None, max_length=2000)
+    unit: str | None = Field(default=None, max_length=50)
+    metadata: dict[str, Any] | None = None
+
+
+class KpiUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    direction: KpiDirection | None = None
+    target_value: float | None = None
+    unit: str | None = Field(default=None, max_length=50)
+    metadata: dict[str, Any] | None = None
+
+
+class KpiMeasurement(BaseModel):
+    current_value: float
+
+
+class KpiOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    name: str
+    description: str | None
+    direction: str
+    target_value: float
+    current_value: float | None
+    goal_id: str | None
+    unit: str | None
+    status: str
+    metadata: dict[str, Any]
     created_at: dt.datetime
     updated_at: dt.datetime

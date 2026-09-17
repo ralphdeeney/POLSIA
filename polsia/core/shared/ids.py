@@ -57,3 +57,54 @@ class MembershipId(_PrefixedId):
 
 class EventId(_PrefixedId):
     prefix = "evt"
+
+
+# -- Phase 2 (OS core primitives) ---------------------------------------------
+
+
+class GoalId(_PrefixedId):
+    prefix = "goal"
+
+
+class KpiId(_PrefixedId):
+    prefix = "kpi"
+
+
+class TaskId(_PrefixedId):
+    prefix = "tsk"
+
+
+class TaskExecutionId(_PrefixedId):
+    prefix = "tex"
+
+
+class AgentId(_PrefixedId):
+    prefix = "agt"
+
+
+class SkillId(_PrefixedId):
+    prefix = "skl"
+
+
+class ToolId(_PrefixedId):
+    prefix = "tol"
+
+
+class ModelId(_PrefixedId):
+    prefix = "mdl"
+
+
+class PermissionId(_PrefixedId):
+    prefix = "prm"
+
+
+class ApprovalId(_PrefixedId):
+    prefix = "apr"
+
+
+class MemoryRecordId(_PrefixedId):
+    prefix = "memr"
+
+
+class UsageRecordId(_PrefixedId):
+    prefix = "usg"
