@@ -33,6 +33,11 @@ from polsia.adapters.persistence.repositories import (
     SqlAlchemyOrganizationRepository,
     SqlAlchemyUserRepository,
 )
+from polsia.adapters.persistence.task_repositories import (
+    SqlAlchemyTaskDependencyRepository,
+    SqlAlchemyTaskExecutionRepository,
+    SqlAlchemyTaskRepository,
+)
 from polsia.core.auth.service import AuthService
 from polsia.core.shared.errors import (
     CompanyNotFoundError,
@@ -40,11 +45,20 @@ from polsia.core.shared.errors import (
     OrganizationNotFoundError,
     UserNotFoundError,
 )
-from polsia.core.shared.ids import CompanyId, OrganizationId, UserId
+from polsia.core.shared.ids import (
+    AgentId,
+    CompanyId,
+    GoalId,
+    KpiId,
+    OrganizationId,
+    TaskId,
+    UserId,
+)
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
 from polsia.services.planning import GoalService, KpiService
+from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.tenancy import CompanyService, OrganizationService
 
 bearer_scheme = HTTPBearer(auto_error=False, description="JWT access token")
@@ -250,3 +264,91 @@ def parse_user_id(raw: str) -> UserId:
         return UserId.parse(raw)
     except ValueError as exc:
         raise UserNotFoundError(f"user {raw!r} not found") from exc
+
+
+def parse_goal_id(raw: str) -> GoalId:
+    """Parse a goal id from a path/payload; malformed ids are 404s."""
+    from polsia.core.shared.errors import NotFoundError
+
+    try:
+        return GoalId.parse(raw)
+    except ValueError as exc:
+        raise NotFoundError(f"goal {raw!r} not found") from exc
+
+
+def parse_kpi_id(raw: str) -> KpiId:
+    """Parse a KPI id from a path/payload; malformed ids are 404s."""
+    from polsia.core.shared.errors import NotFoundError
+
+    try:
+        return KpiId.parse(raw)
+    except ValueError as exc:
+        raise NotFoundError(f"kpi {raw!r} not found") from exc
+
+
+def parse_task_id(raw: str) -> TaskId:
+    """Parse a task id from a path/payload; malformed ids are 404s."""
+    from polsia.core.shared.errors import NotFoundError
+
+    try:
+        return TaskId.parse(raw)
+    except ValueError as exc:
+        raise NotFoundError(f"task {raw!r} not found") from exc
+
+
+def parse_agent_id(raw: str) -> AgentId:
+    """Parse an agent id from a path/payload; malformed ids are 404s."""
+    from polsia.core.shared.errors import NotFoundError
+
+    try:
+        return AgentId.parse(raw)
+    except ValueError as exc:
+        raise NotFoundError(f"agent {raw!r} not found") from exc
+
+
+# -- Phase 2: task services ------------------------------------------------------
+
+
+def get_task_service(request: Request, session: SessionDep) -> TaskService:
+    injected = _services(request).get("tasks")
+    if injected is not None:
+        return cast(TaskService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return TaskService(
+        tasks=SqlAlchemyTaskRepository(session),
+        dependencies=SqlAlchemyTaskDependencyRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
+def get_execution_service(request: Request, session: SessionDep) -> ExecutionService:
+    injected = _services(request).get("executions")
+    if injected is not None:
+        return cast(ExecutionService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return ExecutionService(
+        tasks=SqlAlchemyTaskRepository(session),
+        executions=SqlAlchemyTaskExecutionRepository(session),
+        dependencies=SqlAlchemyTaskDependencyRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+ExecutionServiceDep = Annotated[ExecutionService, Depends(get_execution_service)]

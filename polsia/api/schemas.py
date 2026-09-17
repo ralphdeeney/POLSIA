@@ -207,3 +207,95 @@ class KpiOut(BaseModel):
     metadata: dict[str, Any]
     created_at: dt.datetime
     updated_at: dt.datetime
+
+
+# -- Phase 2: tasks + executions ----------------------------------------------
+
+from polsia.core.tasks.values import TaskStatus  # noqa: E402
+
+
+class TaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    goal_id: str | None = None
+    parent_task_id: str | None = None
+    priority: Priority = Priority.MEDIUM
+    assigned_agent_id: str | None = None
+    assigned_skill: str | None = Field(default=None, max_length=255)
+    input: dict[str, Any] | None = None
+    max_attempts: int = Field(default=3, ge=1, le=20)
+    due_at: dt.datetime | None = None
+    metadata: dict[str, Any] | None = None
+    depends_on: list[str] | None = None
+
+
+class TaskUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    priority: Priority | None = None
+    assigned_agent_id: str | None = None
+    assigned_skill: str | None = Field(default=None, max_length=255)
+    input: dict[str, Any] | None = None
+    due_at: dt.datetime | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class TaskStatusChange(BaseModel):
+    status: TaskStatus
+
+
+class TaskDependencyChange(BaseModel):
+    depends_on_task_id: str
+
+
+class TaskOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    title: str
+    description: str | None
+    goal_id: str | None
+    parent_task_id: str | None
+    status: str
+    priority: str
+    assigned_agent_id: str | None
+    assigned_skill: str | None
+    input: dict[str, Any]
+    output: dict[str, Any] | None
+    attempts: int
+    max_attempts: int
+    due_at: dt.datetime | None
+    metadata: dict[str, Any]
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    started_at: dt.datetime | None
+    completed_at: dt.datetime | None
+
+
+class ExecutionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    task_id: str
+    attempt_number: int
+    status: str
+    agent_id: str | None
+    skill_id: str | None
+    runtime: str | None
+    model: str | None
+    input: dict[str, Any]
+    output: dict[str, Any] | None
+    error: str | None
+    started_at: dt.datetime
+    completed_at: dt.datetime | None
+    metadata: dict[str, Any]
+
+
+class ExecutionComplete(BaseModel):
+    output: dict[str, Any] | None = None
+
+
+class ExecutionFail(BaseModel):
+    error: str | None = Field(default=None, max_length=2000)

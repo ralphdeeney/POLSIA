@@ -192,3 +192,100 @@ class KpiModel(Base):
     )
 
     __table_args__ = (UniqueConstraint("company_id", "name", name="uq_kpis_company_id_name"),)
+
+
+# -- Phase 2: tasks, dependencies, executions ----------------------------------
+
+
+class TaskModel(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    company_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("companies.id", name="fk_tasks_company_id_companies"),
+        nullable=False,
+        index=True,
+    )
+    goal_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    parent_task_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    priority: Mapped[str] = mapped_column(String(20), nullable=False)
+    assigned_agent_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    assigned_skill: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)
+    output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON_DICT, nullable=True)
+    attempts: Mapped[int] = mapped_column(nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(nullable=False, default=3)
+    due_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TaskDependencyModel(Base):
+    __tablename__ = "task_dependencies"
+
+    task_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("tasks.id", name="fk_task_dependencies_task_id_tasks"),
+        primary_key=True,
+    )
+    depends_on_task_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("tasks.id", name="fk_task_dependencies_depends_on_task_id_tasks"),
+        primary_key=True,
+    )
+    company_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("companies.id", name="fk_task_dependencies_company_id_companies"),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id", "depends_on_task_id", name="uq_task_dependencies_task_id_depends_on"
+        ),
+    )
+
+
+class TaskExecutionModel(Base):
+    __tablename__ = "task_executions"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    company_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("companies.id", name="fk_task_executions_company_id_companies"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[str] = mapped_column(
+        String(40),
+        ForeignKey("tasks.id", name="fk_task_executions_task_id_tasks"),
+        nullable=False,
+        index=True,
+    )
+    attempt_number: Mapped[int] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    agent_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    skill_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    input_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)
+    output_json: Mapped[dict[str, Any] | None] = mapped_column(JSON_DICT, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON_DICT, nullable=False)

@@ -33,9 +33,11 @@ from polsia.api.errors import install_error_handlers
 from polsia.api.routers import (
     auth_router,
     companies_router,
+    executions_router,
     goals_router,
     kpis_router,
     organizations_router,
+    tasks_router,
 )
 from polsia.infra.logging import configure_logging, get_logger
 from polsia.infra.settings import Settings, get_settings
@@ -106,7 +108,14 @@ def create_app(
             bus.subscribe("*", LoggingSubscriber())
         app.state.event_bus = bus
         mount_routers(
-            app, auth_router, organizations_router, companies_router, goals_router, kpis_router
+            app,
+            auth_router,
+            organizations_router,
+            companies_router,
+            goals_router,
+            kpis_router,
+            tasks_router,
+            executions_router,
         )
     else:
         app.state.event_bus = None
