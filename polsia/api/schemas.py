@@ -534,3 +534,28 @@ class ApprovalOut(BaseModel):
     metadata: dict[str, Any]
     created_at: dt.datetime
     updated_at: dt.datetime
+
+
+# -- Phase 2: memory ------------------------------------------------------------
+
+
+class MemoryWrite(BaseModel):
+    scope: str = Field(min_length=1, max_length=100)
+    type: str = Field(min_length=1, max_length=100)
+    content: str = Field(min_length=1, max_length=8000)
+    metadata: dict[str, Any] | None = None
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
+class MemoryRecordOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    scope: str
+    type: str
+    content: str
+    metadata: dict[str, Any]
+    importance: float
+    created_at: dt.datetime
+    updated_at: dt.datetime
