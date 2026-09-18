@@ -14,6 +14,7 @@ from polsia.api.routers.registries import (
     tools_router,
 )
 from polsia.api.routers.tasks import executions_router, tasks_router
+from polsia.api.routers.usage import router as usage_router
 
 __all__ = [
     "agents_router",
@@ -29,4 +30,5 @@ __all__ = [
     "skills_router",
     "tasks_router",
     "tools_router",
+    "usage_router",
 ]

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from polsia.core.cost.ports import UsageRecord
 from polsia.core.planning.ports import KpiRepository
 from polsia.core.registry.entities import Agent
 from polsia.core.registry.ports import AgentRepository
@@ -27,6 +28,7 @@ from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
 from polsia.services.planning import _CompanyScope
 from polsia.services.tasks import ExecutionService, TaskService
+from polsia.services.usage import UsageService
 
 
 class OrchestrationService:
@@ -51,6 +53,7 @@ class OrchestrationService:
         memberships: MembershipRepository,
         bus: EventBus,
         store: EventStore | None = None,
+        usage_service: UsageService | None = None,
     ) -> None:
         self._tasks = tasks
         self._executions = executions
@@ -61,6 +64,8 @@ class OrchestrationService:
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
         self._store = store
+        # Optional: when wired, every execution records a UsageRecord.
+        self._usage_service = usage_service
 
     async def plan_goal(
         self,
@@ -202,6 +207,7 @@ class OrchestrationService:
                 actor, organization_id, company_id, execution.id, error=result.error
             )
 
+        await self._record_usage(organization_id, company_id, task, execution, result, agent)
         await self._refresh_goal_kpis(actor, organization_id, company_id, task, execution, result)
         await self._publish(
             "orchestration.executed",
@@ -219,6 +225,33 @@ class OrchestrationService:
             },
         )
         return task, execution, result
+
+    async def _record_usage(
+        self,
+        organization_id: OrganizationId,
+        company_id: CompanyId,
+        task: Task,
+        execution: TaskExecution,
+        result: RuntimeResult,
+        agent: Agent,
+    ) -> None:
+        """Record a company-scoped UsageRecord from the runtime result."""
+        if self._usage_service is None:
+            return
+        record = UsageRecord.from_runtime_result(
+            company_id=company_id,
+            execution_id=execution.id,
+            task_id=task.id,
+            agent_id=execution.agent_id,
+            runtime=execution.runtime,
+            model=execution.model,
+            usage=result.token_usage,
+            tool_call_count=len(result.tool_calls),
+            duration_seconds=result.duration_seconds,
+            metadata={"status": result.status.value},
+        )
+        await self._usage_service.record(record, organization_id=organization_id)
+        _ = agent
 
     async def _refresh_goal_kpis(
         self,

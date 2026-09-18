@@ -559,3 +559,27 @@ class MemoryRecordOut(BaseModel):
     importance: float
     created_at: dt.datetime
     updated_at: dt.datetime
+
+
+# -- Phase 2: usage tracking ----------------------------------------------------
+
+
+class UsageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    company_id: str
+    execution_id: str
+    task_id: str
+    agent_id: str | None
+    runtime: str | None
+    model: str | None
+    prompt_tokens: int
+    completion_tokens: int
+    tool_calls: int
+    duration_seconds: float
+    estimated_cost: str | None = Field(
+        default=None, description="Decimal cost estimate as string, when priced"
+    )
+    metadata: dict[str, Any]
+    created_at: dt.datetime

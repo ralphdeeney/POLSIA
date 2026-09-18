@@ -44,6 +44,7 @@ from polsia.api.routers import (
     skills_router,
     tasks_router,
     tools_router,
+    usage_router,
 )
 from polsia.infra.logging import configure_logging, get_logger
 from polsia.infra.settings import Settings, get_settings
@@ -128,6 +129,7 @@ def create_app(
             skills_router,
             tools_router,
             models_router,
+            usage_router,
         )
     else:
         app.state.event_bus = None

@@ -50,6 +50,7 @@ from polsia.adapters.persistence.task_repositories import (
     SqlAlchemyTaskExecutionRepository,
     SqlAlchemyTaskRepository,
 )
+from polsia.adapters.persistence.usage_repositories import SqlAlchemyUsageRepository
 from polsia.core.auth.service import AuthService
 from polsia.core.shared.errors import (
     CompanyNotFoundError,
@@ -75,6 +76,7 @@ from polsia.services.planning import GoalService, KpiService
 from polsia.services.registries import AgentService, ModelService, SkillService, ToolService
 from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.tenancy import CompanyService, OrganizationService
+from polsia.services.usage import UsageService
 
 bearer_scheme = HTTPBearer(auto_error=False, description="JWT access token")
 
@@ -519,3 +521,27 @@ def get_memory_service(request: Request, session: SessionDep) -> MemoryService:
 
 
 MemoryServiceDep = Annotated[MemoryService, Depends(get_memory_service)]
+
+
+# -- Phase 2: usage service -------------------------------------------------------
+
+
+def get_usage_service(request: Request, session: SessionDep) -> UsageService:
+    injected = _services(request).get("usage")
+    if injected is not None:
+        return cast(UsageService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return UsageService(
+        usage=SqlAlchemyUsageRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+    )
+
+
+UsageServiceDep = Annotated[UsageService, Depends(get_usage_service)]
