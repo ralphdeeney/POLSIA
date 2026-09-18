@@ -40,7 +40,18 @@ class EventEnvelope:
         payload: event-specific data (JSON-serializable, no business schema).
     """
 
-    __slots__ = ("id", "type", "occurred_at", "organization_id", "company_id", "payload")
+    __slots__ = (
+        "id",
+        "type",
+        "occurred_at",
+        "organization_id",
+        "company_id",
+        "payload",
+        "aggregate_type",
+        "aggregate_id",
+        "actor",
+        "metadata",
+    )
 
     id: EventId
     type: str
@@ -48,6 +59,11 @@ class EventEnvelope:
     organization_id: OrganizationId | None
     company_id: CompanyId | None
     payload: dict[str, Any]
+    # -- Phase 2 (additive, ADR-0005): optional durable-event context --------
+    aggregate_type: str | None
+    aggregate_id: str | None
+    actor: str | None
+    metadata: dict[str, Any]
 
     def __init__(
         self,
@@ -58,6 +74,10 @@ class EventEnvelope:
         payload: dict[str, Any] | None = None,
         occurred_at: dt.datetime | None = None,
         event_id: EventId | None = None,
+        aggregate_type: str | None = None,
+        aggregate_id: str | None = None,
+        actor: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         _type_name(event_type)
         if occurred_at is not None and occurred_at.tzinfo is None:
@@ -68,6 +88,10 @@ class EventEnvelope:
         object.__setattr__(self, "organization_id", organization_id)
         object.__setattr__(self, "company_id", company_id)
         object.__setattr__(self, "payload", dict(payload or {}))
+        object.__setattr__(self, "aggregate_type", aggregate_type)
+        object.__setattr__(self, "aggregate_id", aggregate_id)
+        object.__setattr__(self, "actor", actor)
+        object.__setattr__(self, "metadata", dict(metadata or {}))
 
     def __setattr__(self, name: str, value: Any) -> None:  # pragma: no cover
         raise AttributeError("EventEnvelope is immutable")
@@ -80,6 +104,10 @@ class EventEnvelope:
             "organization_id": str(self.organization_id) if self.organization_id else None,
             "company_id": str(self.company_id) if self.company_id else None,
             "payload": self.payload,
+            "aggregate_type": self.aggregate_type,
+            "aggregate_id": self.aggregate_id,
+            "actor": self.actor,
+            "metadata": self.metadata,
         }
 
 
@@ -98,3 +126,38 @@ class EventBus(Protocol):
     def publish(self, event: EventEnvelope) -> None: ...
 
     def subscribe(self, pattern: str, handler: EventHandler) -> None: ...
+
+
+# -- Durable event store (Phase 2, ADR-0005) ------------------------------------
+
+
+class EventStore(Protocol):
+    """Port for durable event persistence (approved decision C1a).
+
+    The synchronous ``EventBus`` contract is intentionally preserved: the
+    shared publish path persists the envelope FIRST (``emit`` below), then
+    dispatches on the in-process bus. ``append`` participates in the caller's
+    transaction: if the mutation rolls back, the event is not recorded.
+    """
+
+    async def append(self, event: EventEnvelope) -> None: ...
+
+    async def list_for_organization(
+        self, organization_id: OrganizationId, *, limit: int = 100
+    ) -> list[EventEnvelope]: ...
+
+    async def list_for_company(
+        self, organization_id: OrganizationId, company_id: CompanyId, *, limit: int = 100
+    ) -> list[EventEnvelope]: ...
+
+
+async def emit(bus: EventBus, store: EventStore | None, event: EventEnvelope) -> None:
+    """Shared publish path: mutation -> persist durable event -> dispatch.
+
+    Persistence failures abort the mutation (the exception propagates and the
+    caller's transaction rolls back). With ``store=None`` (Phase 0-1 style)
+    this is a plain synchronous dispatch.
+    """
+    if store is not None:
+        await store.append(event)
+    bus.publish(event)

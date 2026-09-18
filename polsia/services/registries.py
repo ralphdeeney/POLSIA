@@ -26,7 +26,7 @@ from polsia.core.shared.errors import (
     NotFoundError,
     OrganizationNotFoundError,
 )
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import AgentId, CompanyId, ModelId, OrganizationId, SkillId, ToolId
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
@@ -43,11 +43,13 @@ class AgentService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._agents = agents
         self._companies = companies
         self._memberships = memberships
         self._bus = bus
+        self._store = store
 
     async def register_agent(
         self,
@@ -77,7 +79,7 @@ class AgentService:
             configuration=configuration,
         )
         await self._agents.add(agent)
-        self._publish(
+        await self._publish(
             "agent.registered",
             organization_id,
             company_id,
@@ -124,7 +126,7 @@ class AgentService:
             configuration=configuration,
         )
         await self._agents.update(agent)
-        self._publish(
+        await self._publish(
             "agent.updated",
             organization_id,
             company_id,
@@ -144,7 +146,7 @@ class AgentService:
         agent = await self._load(company_id, agent_id)
         agent = agent.disable() if status is RegistryStatus.DISABLED else agent.enable()
         await self._agents.update(agent)
-        self._publish(
+        await self._publish(
             "agent.updated",
             organization_id,
             company_id,
@@ -169,20 +171,22 @@ class AgentService:
             raise NotFoundError(f"agent {agent_id} not found")
         return agent
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         organization_id: OrganizationId,
         company_id: CompanyId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload=payload,
-            )
+            ),
         )
 
 
@@ -192,12 +196,15 @@ class _GlobalRegistryService:
     entity_name: str
     event_namespace: str
 
-    def __init__(self, bus: EventBus) -> None:
+    def __init__(self, bus: EventBus, store: EventStore | None = None) -> None:
         self._bus = bus
+        self._store = store
 
-    def _publish(self, event_type: str, payload: dict[str, Any]) -> None:
-        self._bus.publish(
-            EventEnvelope(event_type=f"{self.event_namespace}.{event_type}", payload=payload)
+    async def _publish(self, event_type: str, payload: dict[str, Any]) -> None:
+        await emit(
+            self._bus,
+            self._store,
+            EventEnvelope(event_type=f"{self.event_namespace}.{event_type}", payload=payload),
         )
 
     def _check_duplicate(self, existing: Any) -> None:
@@ -216,15 +223,17 @@ class SkillService(_GlobalRegistryService):
     entity_name = "skill"
     event_namespace = "skill"
 
-    def __init__(self, skills: SkillRepository, bus: EventBus) -> None:
-        super().__init__(bus)
+    def __init__(
+        self, skills: SkillRepository, bus: EventBus, store: EventStore | None = None
+    ) -> None:
+        super().__init__(bus, store)
         self._skills = skills
 
     async def register_skill(self, *, name: str, version: str, **kwargs: Any) -> Skill:
         self._check_duplicate(await self._skills.get_by_key(name, version))
         skill = Skill.create(name=name, version=version, **kwargs)
         await self._skills.add(skill)
-        self._publish(
+        await self._publish(
             "registered",
             {"skill_id": str(skill.id), "name": skill.name, "version": skill.version},
         )
@@ -246,7 +255,7 @@ class SkillService(_GlobalRegistryService):
         skill = await self.get_skill(skill_id)
         skill = skill.update(**kwargs)
         await self._skills.update(skill)
-        self._publish(
+        await self._publish(
             "updated",
             {"skill_id": str(skill.id), "name": skill.name, "version": skill.version},
         )
@@ -256,7 +265,7 @@ class SkillService(_GlobalRegistryService):
         skill = await self.get_skill(skill_id)
         skill = skill.disable() if status is RegistryStatus.DISABLED else skill.enable()
         await self._skills.update(skill)
-        self._publish(
+        await self._publish(
             "updated",
             {
                 "skill_id": str(skill.id),
@@ -272,15 +281,17 @@ class ToolService(_GlobalRegistryService):
     entity_name = "tool"
     event_namespace = "tool"
 
-    def __init__(self, tools: ToolRepository, bus: EventBus) -> None:
-        super().__init__(bus)
+    def __init__(
+        self, tools: ToolRepository, bus: EventBus, store: EventStore | None = None
+    ) -> None:
+        super().__init__(bus, store)
         self._tools = tools
 
     async def register_tool(self, *, name: str, version: str, **kwargs: Any) -> Tool:
         self._check_duplicate(await self._tools.get_by_key(name, version))
         tool = Tool.create(name=name, version=version, **kwargs)
         await self._tools.add(tool)
-        self._publish(
+        await self._publish(
             "registered", {"tool_id": str(tool.id), "name": tool.name, "version": tool.version}
         )
         return tool
@@ -301,7 +312,7 @@ class ToolService(_GlobalRegistryService):
         tool = await self.get_tool(tool_id)
         tool = tool.update(**kwargs)
         await self._tools.update(tool)
-        self._publish(
+        await self._publish(
             "updated", {"tool_id": str(tool.id), "name": tool.name, "version": tool.version}
         )
         return tool
@@ -310,7 +321,7 @@ class ToolService(_GlobalRegistryService):
         tool = await self.get_tool(tool_id)
         tool = tool.disable() if status is RegistryStatus.DISABLED else tool.enable()
         await self._tools.update(tool)
-        self._publish(
+        await self._publish(
             "updated",
             {
                 "tool_id": str(tool.id),
@@ -326,15 +337,17 @@ class ModelService(_GlobalRegistryService):
     entity_name = "model"
     event_namespace = "model"
 
-    def __init__(self, models: ModelRepository, bus: EventBus) -> None:
-        super().__init__(bus)
+    def __init__(
+        self, models: ModelRepository, bus: EventBus, store: EventStore | None = None
+    ) -> None:
+        super().__init__(bus, store)
         self._models = models
 
     async def register_model(self, *, name: str, version: str, **kwargs: Any) -> ModelEntry:
         self._check_duplicate(await self._models.get_by_key(name, version))
         model = ModelEntry.create(name=name, version=version, **kwargs)
         await self._models.add(model)
-        self._publish(
+        await self._publish(
             "registered", {"model_id": str(model.id), "name": model.name, "version": model.version}
         )
         return model
@@ -355,7 +368,7 @@ class ModelService(_GlobalRegistryService):
         model = await self.get_model(model_id)
         model = model.update(**kwargs)
         await self._models.update(model)
-        self._publish(
+        await self._publish(
             "updated", {"model_id": str(model.id), "name": model.name, "version": model.version}
         )
         return model
@@ -364,7 +377,7 @@ class ModelService(_GlobalRegistryService):
         model = await self.get_model(model_id)
         model = model.disable() if status is RegistryStatus.DISABLED else model.enable()
         await self._models.update(model)
-        self._publish(
+        await self._publish(
             "updated",
             {
                 "model_id": str(model.id),

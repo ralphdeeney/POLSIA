@@ -23,7 +23,7 @@ from polsia.core.permissions.errors import ApprovalRequired, PermissionDenied
 from polsia.core.permissions.ports import ApprovalRepository, PermissionRepository
 from polsia.core.permissions.values import PermissionDecision
 from polsia.core.shared.errors import NotFoundError, ValidationError
-from polsia.core.shared.events import EventBus, EventEnvelope, utcnow
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit, utcnow
 from polsia.core.shared.ids import ApprovalId, CompanyId, OrganizationId, UserId
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
@@ -54,12 +54,14 @@ class PermissionService:
         memberships: MembershipRepository,
         bus: EventBus,
         clock: Callable[[], dt.datetime] | None = None,
+        store: EventStore | None = None,
     ) -> None:
         self._permissions = permissions
         # Retained so gates can reference existing pending approvals later.
         self._approvals = approvals
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
         self._clock = clock or utcnow
 
     async def require_company_access(
@@ -112,14 +114,14 @@ class PermissionService:
             )
             await self._permissions.add(permission)
         if decision is PermissionDecision.ALLOW:
-            self._publish(
+            await self._publish(
                 "permission.granted",
                 organization_id=organization_id,
                 company_id=company_id,
                 permission=permission,
             )
         elif decision is PermissionDecision.DENY:
-            self._publish(
+            await self._publish(
                 "permission.revoked",
                 organization_id=organization_id,
                 company_id=company_id,
@@ -219,7 +221,7 @@ class PermissionService:
                 return rule
         return None
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         *,
@@ -227,7 +229,9 @@ class PermissionService:
         company_id: CompanyId,
         permission: Permission,
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
@@ -241,7 +245,7 @@ class PermissionService:
                     "action": permission.action,
                     "decision": permission.decision.value,
                 },
-            )
+            ),
         )
 
 
@@ -255,10 +259,12 @@ class ApprovalService:
         memberships: MembershipRepository,
         bus: EventBus,
         clock: Callable[[], dt.datetime] | None = None,
+        store: EventStore | None = None,
     ) -> None:
         self._approvals = approvals
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
         self._clock = clock or utcnow
 
     async def request_approval(
@@ -289,7 +295,7 @@ class ApprovalService:
             now=self._clock(),
         )
         await self._approvals.add(approval)
-        self._publish(
+        await self._publish(
             "approval.requested",
             organization_id=organization_id,
             company_id=company_id,
@@ -323,7 +329,7 @@ class ApprovalService:
         else:
             approval = approval.reject(actor.id, now=now)
         await self._approvals.update(approval)
-        self._publish(
+        await self._publish(
             "approval.decided",
             organization_id=organization_id,
             company_id=company_id,
@@ -345,7 +351,7 @@ class ApprovalService:
             return await self._approvals.list_pending(company_id)
         return await self._approvals.list_for_company(company_id)
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         *,
@@ -354,7 +360,9 @@ class ApprovalService:
         approval: Approval,
         extra: dict[str, Any] | None = None,
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
@@ -368,5 +376,5 @@ class ApprovalService:
                     "status": approval.status.value,
                     **(extra or {}),
                 },
-            )
+            ),
         )

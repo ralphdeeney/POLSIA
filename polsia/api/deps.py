@@ -25,6 +25,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from polsia.adapters.persistence.event_store import SqlAlchemyEventStore
 from polsia.adapters.persistence.memory_repositories import SqlAlchemyMemoryStore
 from polsia.adapters.persistence.permission_repositories import (
     SqlAlchemyApprovalRepository,
@@ -225,6 +226,7 @@ def get_goal_service(request: Request, session: SessionDep) -> GoalService:
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -247,6 +249,7 @@ def get_kpi_service(request: Request, session: SessionDep) -> KpiService:
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -339,6 +342,7 @@ def get_task_service(request: Request, session: SessionDep) -> TaskService:
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -362,6 +366,7 @@ def get_execution_service(request: Request, session: SessionDep) -> ExecutionSer
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -386,6 +391,7 @@ def get_agent_service(request: Request, session: SessionDep) -> AgentService:
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -402,7 +408,9 @@ async def get_skill_service(request: Request, session: SessionDep) -> SkillServi
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="event bus not configured",
         )
-    return SkillService(skills=SqlAlchemySkillRepository(session), bus=bus)
+    return SkillService(
+        skills=SqlAlchemySkillRepository(session), bus=bus, store=SqlAlchemyEventStore(session)
+    )
 
 
 async def get_tool_service(request: Request, session: SessionDep) -> ToolService:
@@ -415,7 +423,9 @@ async def get_tool_service(request: Request, session: SessionDep) -> ToolService
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="event bus not configured",
         )
-    return ToolService(tools=SqlAlchemyToolRepository(session), bus=bus)
+    return ToolService(
+        tools=SqlAlchemyToolRepository(session), bus=bus, store=SqlAlchemyEventStore(session)
+    )
 
 
 async def get_model_service(request: Request, session: SessionDep) -> ModelService:
@@ -428,7 +438,9 @@ async def get_model_service(request: Request, session: SessionDep) -> ModelServi
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="event bus not configured",
         )
-    return ModelService(models=SqlAlchemyModelRepository(session), bus=bus)
+    return ModelService(
+        models=SqlAlchemyModelRepository(session), bus=bus, store=SqlAlchemyEventStore(session)
+    )
 
 
 SkillServiceDep = Annotated[SkillService, Depends(get_skill_service)]
@@ -455,6 +467,7 @@ def get_permission_service(request: Request, session: SessionDep) -> PermissionS
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -476,6 +489,7 @@ def get_approval_service(request: Request, session: SessionDep) -> ApprovalServi
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 
@@ -500,6 +514,7 @@ def get_memory_service(request: Request, session: SessionDep) -> MemoryService:
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 

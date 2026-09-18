@@ -14,7 +14,7 @@ from typing import Any
 from polsia.core.memory.entities import MemoryRecord
 from polsia.core.memory.ports import MemoryPort
 from polsia.core.shared.errors import NotFoundError
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import CompanyId, MemoryRecordId, OrganizationId
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
@@ -30,10 +30,12 @@ class MemoryService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._memory = memory
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     async def write(
         self,
@@ -57,7 +59,7 @@ class MemoryService:
             importance=importance,
         )
         await self._memory.store(record)
-        self._publish(
+        await self._publish(
             "memory.created",
             organization_id=organization_id,
             company_id=company_id,
@@ -104,7 +106,7 @@ class MemoryService:
         if record is None:
             raise NotFoundError(f"memory record {record_id} not found")
         await self._memory.delete(company_id, record_id)
-        self._publish(
+        await self._publish(
             "memory.deleted",
             organization_id=organization_id,
             company_id=company_id,
@@ -124,7 +126,7 @@ class MemoryService:
         await self._scope.require_company(actor, organization_id, company_id)
         return await self._memory.list(company_id, scope=scope, limit=limit)
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         *,
@@ -133,11 +135,13 @@ class MemoryService:
         record_id: MemoryRecordId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload={"memory_record_id": str(record_id), **payload},
-            )
+            ),
         )

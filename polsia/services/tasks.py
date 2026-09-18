@@ -20,7 +20,7 @@ from polsia.core.shared.errors import (
     NotFoundError,
     ValidationError,
 )
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import (
     AgentId,
     CompanyId,
@@ -61,11 +61,13 @@ class TaskService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._tasks = tasks
         self._dependencies = dependencies
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     # -- commands ----------------------------------------------------------
 
@@ -117,7 +119,7 @@ class TaskService:
         await self._tasks.add(task)
         for prereq in depends_on or []:
             await self._dependencies.add(company_id, task.id, prereq)
-        self._publish(
+        await self._publish(
             "task.created",
             organization_id,
             company_id,
@@ -180,7 +182,7 @@ class TaskService:
         previous = task.status
         task = task.transition_status(new_status)
         await self._tasks.update(task)
-        self._publish_status(organization_id, company_id, task.id, previous, new_status)
+        await self._publish_status(organization_id, company_id, task.id, previous, new_status)
         if new_status is TaskStatus.COMPLETED:
             await self._promote_dependents(actor, organization_id, company_id, task_id)
         return task
@@ -215,7 +217,7 @@ class TaskService:
             metadata=metadata,
         )
         await self._tasks.update(task)
-        self._publish(
+        await self._publish(
             "task.updated",
             organization_id,
             company_id,
@@ -275,7 +277,7 @@ class TaskService:
         previous = task.status
         task = task.transition_status(TaskStatus.READY)
         await self._tasks.update(task)
-        self._publish_status(organization_id, company_id, task.id, previous, TaskStatus.READY)
+        await self._publish_status(organization_id, company_id, task.id, previous, TaskStatus.READY)
         return task
 
     async def _promote_dependents(
@@ -321,7 +323,7 @@ class TaskService:
             raise NotFoundError(f"task {task_id} not found")
         return task
 
-    def _publish_status(
+    async def _publish_status(
         self,
         organization_id: OrganizationId,
         company_id: CompanyId,
@@ -329,7 +331,7 @@ class TaskService:
         previous: TaskStatus,
         new: TaskStatus,
     ) -> None:
-        self._publish(
+        await self._publish(
             TaskStatusEvent[new],
             organization_id,
             company_id,
@@ -337,7 +339,7 @@ class TaskService:
             {"from": previous.value, "to": new.value},
         )
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         organization_id: OrganizationId,
@@ -345,13 +347,15 @@ class TaskService:
         task_id: TaskId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload={"task_id": str(task_id), **payload},
-            )
+            ),
         )
 
 
@@ -366,12 +370,14 @@ class ExecutionService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._tasks = tasks
         self._executions = executions
         self._dependencies = dependencies
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     async def start_execution(
         self,
@@ -406,7 +412,7 @@ class ExecutionService:
             input=input if input is not None else dict(task.input),
         )
         await self._executions.add(execution)
-        self._publish(
+        await self._publish(
             "execution.started",
             organization_id,
             company_id,
@@ -434,7 +440,7 @@ class ExecutionService:
         task = await self._load(company_id, execution.task_id)
         task = task.transition_status(TaskStatus.COMPLETED).record_output(execution.output or {})
         await self._tasks.update(task)
-        self._publish(
+        await self._publish(
             "execution.completed",
             organization_id,
             company_id,
@@ -442,7 +448,7 @@ class ExecutionService:
             execution.id,
             {"attempt": execution.attempt_number},
         )
-        self._publish(
+        await self._publish(
             TaskStatusEvent[TaskStatus.COMPLETED],
             organization_id,
             company_id,
@@ -450,7 +456,13 @@ class ExecutionService:
             {"from": TaskStatus.RUNNING.value, "to": TaskStatus.COMPLETED.value},
         )
         await _promote_ready_dependents(
-            self._tasks, self._dependencies, self._bus, organization_id, company_id, task.id
+            self._tasks,
+            self._dependencies,
+            self._bus,
+            organization_id,
+            company_id,
+            task.id,
+            store=self._store,
         )
         return task, execution
 
@@ -471,7 +483,7 @@ class ExecutionService:
         task = await self._load(company_id, execution.task_id)
         task = task.transition_status(TaskStatus.FAILED)
         await self._tasks.update(task)
-        self._publish(
+        await self._publish(
             "execution.failed",
             organization_id,
             company_id,
@@ -479,7 +491,7 @@ class ExecutionService:
             execution.id,
             {"attempt": execution.attempt_number, "error": error},
         )
-        self._publish(
+        await self._publish(
             TaskStatusEvent[TaskStatus.FAILED],
             organization_id,
             company_id,
@@ -506,7 +518,7 @@ class ExecutionService:
             )
         task = task.transition_status(TaskStatus.RETRYING)
         await self._tasks.update(task)
-        self._publish(
+        await self._publish(
             TaskStatusEvent[TaskStatus.RETRYING],
             organization_id,
             company_id,
@@ -546,7 +558,7 @@ class ExecutionService:
             raise NotFoundError(f"execution {execution_id} not found")
         return execution
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         organization_id: OrganizationId,
@@ -562,13 +574,15 @@ class ExecutionService:
             body: dict[str, Any] = dict(cast("dict[str, Any]", execution_id_or_payload))
         else:
             body = {"execution_id": str(execution_id_or_payload), **payload}
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload={"task_id": str(task_id), **body},
-            )
+            ),
         )
 
 
@@ -579,6 +593,7 @@ async def _promote_ready_dependents(
     organization_id: OrganizationId,
     company_id: CompanyId,
     completed_task_id: TaskId,
+    store: EventStore | None = None,
 ) -> None:
     """When a task completes, pending dependents whose remaining dependencies
     are all completed become ready (and emit ``task.ready``)."""
@@ -599,7 +614,9 @@ async def _promote_ready_dependents(
         previous = dep.status
         dep = dep.transition_status(TaskStatus.READY)
         await tasks.update(dep)
-        bus.publish(
+        await emit(
+            bus,
+            store,
             EventEnvelope(
                 event_type="task.ready",
                 organization_id=organization_id,
@@ -609,5 +626,5 @@ async def _promote_ready_dependents(
                     "from": previous.value,
                     "to": TaskStatus.READY.value,
                 },
-            )
+            ),
         )

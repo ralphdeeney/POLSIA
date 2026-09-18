@@ -18,7 +18,7 @@ from polsia.core.shared.errors import (
     NotAMember,
     NotFoundError,
 )
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import CompanyId, GoalId, KpiId, OrganizationId
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
@@ -55,10 +55,12 @@ class GoalService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._goals = goals
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     async def create_goal(
         self,
@@ -88,7 +90,7 @@ class GoalService:
             metadata=metadata,
         )
         await self._goals.add(goal)
-        self._publish(
+        await self._publish(
             "goal.created",
             organization_id=organization_id,
             company_id=company_id,
@@ -141,7 +143,7 @@ class GoalService:
             description=description, priority=priority, due_at=due_at, metadata=metadata
         )
         await self._goals.update(goal)
-        self._publish(
+        await self._publish(
             "goal.updated",
             organization_id=organization_id,
             company_id=company_id,
@@ -164,7 +166,7 @@ class GoalService:
         previous = goal.status
         goal = goal.transition_status(new_status)
         await self._goals.update(goal)
-        self._publish(
+        await self._publish(
             "goal.status_changed",
             organization_id=organization_id,
             company_id=company_id,
@@ -172,7 +174,7 @@ class GoalService:
             payload={"from": previous.value, "to": new_status.value},
         )
         if new_status is GoalStatus.COMPLETED:
-            self._publish(
+            await self._publish(
                 "goal.completed",
                 organization_id=organization_id,
                 company_id=company_id,
@@ -180,7 +182,7 @@ class GoalService:
                 payload={"title": goal.title},
             )
         elif new_status is GoalStatus.CANCELLED:
-            self._publish(
+            await self._publish(
                 "goal.cancelled",
                 organization_id=organization_id,
                 company_id=company_id,
@@ -195,7 +197,7 @@ class GoalService:
             raise NotFoundError(f"goal {goal_id} not found")
         return goal
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         *,
@@ -204,13 +206,15 @@ class GoalService:
         goal_id: GoalId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload={"goal_id": str(goal_id), **payload},
-            )
+            ),
         )
 
 
@@ -224,11 +228,13 @@ class KpiService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._kpis = kpis
         self._goals = goals
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     async def create_kpi(
         self,
@@ -260,7 +266,7 @@ class KpiService:
             metadata=metadata,
         )
         await self._kpis.add(kpi)
-        self._publish(
+        await self._publish(
             "kpi.created",
             organization_id=organization_id,
             company_id=company_id,
@@ -317,7 +323,7 @@ class KpiService:
             metadata=metadata,
         )
         await self._kpis.update(kpi)
-        self._publish(
+        await self._publish(
             "kpi.updated",
             organization_id=organization_id,
             company_id=company_id,
@@ -344,7 +350,7 @@ class KpiService:
         deadline_passed = await self._deadline_passed(company_id, kpi)
         kpi = kpi.record_measurement(current_value, deadline_passed=deadline_passed)
         await self._kpis.update(kpi)
-        self._publish(
+        await self._publish(
             "kpi.measurement_recorded",
             organization_id=organization_id,
             company_id=company_id,
@@ -353,7 +359,7 @@ class KpiService:
         )
         if kpi.status is not previous_status:
             if kpi.status.value == "achieved":
-                self._publish(
+                await self._publish(
                     "kpi.achieved",
                     organization_id=organization_id,
                     company_id=company_id,
@@ -361,7 +367,7 @@ class KpiService:
                     payload={"current": kpi.current_value, "target": kpi.target_value},
                 )
             elif kpi.status.value == "missed":
-                self._publish(
+                await self._publish(
                     "kpi.missed",
                     organization_id=organization_id,
                     company_id=company_id,
@@ -385,7 +391,7 @@ class KpiService:
             raise NotFoundError(f"kpi {kpi_id} not found")
         return kpi
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         *,
@@ -394,11 +400,13 @@ class KpiService:
         kpi_id: KpiId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload={"kpi_id": str(kpi_id), **payload},
-            )
+            ),
         )

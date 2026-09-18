@@ -20,7 +20,7 @@ from polsia.core.registry.ports import AgentRepository
 from polsia.core.runtime.ports import RuntimePort, RuntimeRequest, RuntimeResult
 from polsia.core.scheduling import OrchestratorPort
 from polsia.core.shared.errors import NotFoundError, ValidationError
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import AgentId, CompanyId, GoalId, OrganizationId
 from polsia.core.tasks.entities import Task, TaskExecution
 from polsia.core.tenancy.entities import User
@@ -50,6 +50,7 @@ class OrchestrationService:
         companies: CompanyRepository,
         memberships: MembershipRepository,
         bus: EventBus,
+        store: EventStore | None = None,
     ) -> None:
         self._tasks = tasks
         self._executions = executions
@@ -59,6 +60,7 @@ class OrchestrationService:
         self._kpis = kpis
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
+        self._store = store
 
     async def plan_goal(
         self,
@@ -107,7 +109,7 @@ class OrchestrationService:
             )
             created.append(task)
 
-        self._publish(
+        await self._publish(
             "orchestration.planned",
             organization_id,
             company_id,
@@ -201,7 +203,7 @@ class OrchestrationService:
             )
 
         await self._refresh_goal_kpis(actor, organization_id, company_id, task, execution, result)
-        self._publish(
+        await self._publish(
             "orchestration.executed",
             organization_id,
             company_id,
@@ -245,7 +247,7 @@ class OrchestrationService:
         for kpi in kpis:
             updated = kpi.record_measurement(value)
             await self._kpis.update(updated)
-            self._publish(
+            await self._publish(
                 "kpi.measurement_recorded",
                 organization_id,
                 company_id,
@@ -257,18 +259,20 @@ class OrchestrationService:
                 },
             )
 
-    def _publish(
+    async def _publish(
         self,
         event_type: str,
         organization_id: OrganizationId,
         company_id: CompanyId,
         payload: dict[str, Any],
     ) -> None:
-        self._bus.publish(
+        await emit(
+            self._bus,
+            self._store,
             EventEnvelope(
                 event_type=event_type,
                 organization_id=organization_id,
                 company_id=company_id,
                 payload=payload,
-            )
+            ),
         )
