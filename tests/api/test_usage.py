@@ -7,6 +7,10 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 from polsia.adapters.events import InProcessEventBus
+from polsia.adapters.persistence.permission_repositories import (
+    SqlAlchemyApprovalRepository,
+    SqlAlchemyPermissionRepository,
+)
 from polsia.adapters.persistence.registry_repositories import SqlAlchemyAgentRepository
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
@@ -22,10 +26,12 @@ from polsia.adapters.persistence.task_repositories import (
 from polsia.adapters.persistence.usage_repositories import SqlAlchemyUsageRepository
 from polsia.adapters.runtime import MockRuntime
 from polsia.api.main import create_app
+from polsia.core.permissions.values import PermissionDecision
 from polsia.core.tenancy.entities import User as DomainUser
 from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
 from polsia.services.orchestration import OrchestrationService
+from polsia.services.permissions import PermissionService
 from polsia.services.planning import GoalService
 from polsia.services.registries import AgentService
 from polsia.services.tasks import ExecutionService, TaskService
@@ -103,6 +109,13 @@ async def run_one_execution(
     usage = SqlAlchemyUsageRepository(session)
 
     usage_service = UsageService(usage, companies, memberships, bus)
+    permission_service = PermissionService(
+        SqlAlchemyPermissionRepository(session),
+        SqlAlchemyApprovalRepository(session),
+        companies,
+        memberships,
+        bus,
+    )
     orchestration = OrchestrationService(
         tasks=TaskService(tasks, deps, companies, memberships, bus),
         executions=ExecutionService(tasks, executions, deps, companies, memberships, bus),
@@ -113,6 +126,7 @@ async def run_one_execution(
         companies=companies,
         memberships=memberships,
         bus=bus,
+        permissions=permission_service,
         usage_service=usage_service,
     )
     _ = GoalService  # imported for parity with the capstone test
@@ -126,6 +140,20 @@ async def run_one_execution(
         title="measured work",
         input={"prompt_tokens": 100, "completion_tokens": 50, "tool_calls": ["web_search@1.0.0"]},
     )
+    # Phase 3 security gate: grant the agent an explicit ALLOW (deny-by-default)
+    registered_agents = await agents.list_for_company(company["id"])
+    for agent in registered_agents:
+        await permission_service.set_policy(
+            domain_user,
+            org["id"],
+            company["id"],
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
     await orchestration.execute_task(domain_user, org["id"], company["id"], task.id)
     await session.commit()
 

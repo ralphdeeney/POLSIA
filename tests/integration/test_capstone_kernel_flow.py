@@ -14,6 +14,10 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 from polsia.adapters.events import InProcessEventBus
+from polsia.adapters.persistence.permission_repositories import (
+    SqlAlchemyApprovalRepository,
+    SqlAlchemyPermissionRepository,
+)
 from polsia.adapters.persistence.registry_repositories import SqlAlchemyAgentRepository
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
@@ -28,6 +32,7 @@ from polsia.adapters.persistence.task_repositories import (
 )
 from polsia.adapters.runtime import DeterministicOrchestrator, MockRuntime
 from polsia.api.main import create_app
+from polsia.core.permissions.values import PermissionDecision
 from polsia.core.planning.values import KpiDirection, Priority
 from polsia.core.registry.values import RegistryStatus
 from polsia.core.shared.events import EventEnvelope
@@ -36,6 +41,7 @@ from polsia.core.tenancy.entities import User
 from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
 from polsia.services.orchestration import OrchestrationService
+from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService, KpiService
 from polsia.services.registries import AgentService
 from polsia.services.tasks import ExecutionService, TaskService
@@ -126,12 +132,24 @@ async def _register_and_setup(
     executions = SqlAlchemyTaskExecutionRepository(session)
     agents = SqlAlchemyAgentRepository(session)
 
+    permission_service = PermissionService(
+        SqlAlchemyPermissionRepository(session),
+        SqlAlchemyApprovalRepository(session),
+        companies,
+        memberships,
+        bus,
+    )
+    approval_service = ApprovalService(
+        SqlAlchemyApprovalRepository(session), companies, memberships, bus
+    )
     graph = {
         "goals": GoalService(goals, companies, memberships, bus),
         "kpis": KpiService(kpis, goals, companies, memberships, bus),
         "tasks": TaskService(tasks, deps, companies, memberships, bus),
         "executions": ExecutionService(tasks, executions, deps, companies, memberships, bus),
         "agents": AgentService(agents, companies, memberships, bus),
+        "permissions": permission_service,
+        "approvals": approval_service,
         "orchestration": OrchestrationService(
             tasks=TaskService(tasks, deps, companies, memberships, bus),
             executions=ExecutionService(tasks, executions, deps, companies, memberships, bus),
@@ -142,11 +160,31 @@ async def _register_and_setup(
             companies=companies,
             memberships=memberships,
             bus=bus,
+            permissions=permission_service,
+            approvals=approval_service,
         ),
         "session": session,
         "agents_repo": agents,
     }
     return user, org, company, headers, graph
+
+
+async def grant_execute_permission(graph: Any, user: Any, org_id: str, company_id: str) -> None:
+    """Phase 3 security gate: execution requires an explicit ALLOW policy for
+    the agent principal (deny-by-default). Tests call this to grant it."""
+    agents = await graph["agents"].list_agents(user, org_id, company_id)
+    for agent in agents:
+        await graph["permissions"].set_policy(
+            user,
+            org_id,
+            company_id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
 
 
 class TestCapstoneKernelFlow:
@@ -210,6 +248,9 @@ class TestCapstoneKernelFlow:
         with pytest.raises(ValidationError):
             await graph["executions"].start_execution(user, org_id, company_id, tasks[1].id)
 
+        # 5b. SECURITY: grant execution permission (deny-by-default gate)
+        await grant_execute_permission(graph, user, org_id, company_id)
+
         # 6. EXECUTE task 1 through MockRuntime (agent selection automatic)
         task1, execution1, result1 = await graph["orchestration"].execute_task(
             user,
@@ -226,6 +267,7 @@ class TestCapstoneKernelFlow:
         # 7. DEPENDENCY UNLOCK: task 2 is now ready, then execute it too
         refreshed = await graph["tasks"].get_task(user, org_id, company_id, tasks[1].id)
         assert refreshed.status.value == "ready"
+        await grant_execute_permission(graph, user, org_id, company_id)
         task2, execution2, result2 = await graph["orchestration"].execute_task(
             user, org_id, company_id, tasks[1].id
         )
@@ -283,6 +325,7 @@ class TestCapstoneKernelFlow:
             goal_id=goal.id,
             input={"kpi_value": 5000},
         )
+        await grant_execute_permission(graph, user, org_id, company_id)
         _task, _execution, result = await graph["orchestration"].execute_task(
             user, org_id, company_id, task.id
         )
@@ -312,6 +355,7 @@ class TestCapstoneKernelFlow:
             input={"fail": True, "error": "upstream timeout"},
             max_attempts=2,
         )
+        await grant_execute_permission(graph, user, org_id, company_id)
         _task, execution, result = await graph["orchestration"].execute_task(
             user, org_id, company_id, task.id
         )
@@ -332,6 +376,7 @@ class TestCapstoneKernelFlow:
             user, org_id, company_id, task.id, input={"fail": False}
         )
         assert task_after.status.value == "retrying"
+        await grant_execute_permission(graph, user, org_id, company_id)
         _task2, execution2, result2 = await graph["orchestration"].execute_task(
             user, org_id, company_id, task.id
         )
@@ -421,6 +466,7 @@ class TestCapstoneKernelFlow:
                 "artifacts": [{"kind": "note", "value": "x"}],
             },
         )
+        await grant_execute_permission(graph, user, org_id, company_id)
         _task, execution, result = await graph["orchestration"].execute_task(
             user, org_id, company_id, task.id
         )
