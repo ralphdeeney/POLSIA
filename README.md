@@ -17,10 +17,15 @@ User → Organization → Company → Company State → CEO → Goals/KPIs
 - **Decision records**: [docs/DECISIONS/](docs/DECISIONS/)
 - **Contribution & subagent policy**: [CONTRIBUTING.md](CONTRIBUTING.md)
 
-**Status:** Phases 0–1 complete — layered architecture, shared kernel,
+**Status:** Phases 0–2 complete — layered architecture, shared kernel,
 multi-tenant foundation (User / Organization / Company), JWT auth, company
-lifecycle state machine, lifecycle events, PostgreSQL persistence with a
-no-Docker SQLite fallback, 132 tests at 93% coverage.
+lifecycle state machine, durable events (events table + EventStore port), and
+the Phase 2 OS kernel: Goals + KPIs (deterministic evaluator), Tasks with
+dependencies + append-only Executions, Agent/Skill/Tool/Model registries,
+PermissionEngine (deny-by-default) + Approvals, MemoryPort, Runtime/Model/
+Scheduler/Orchestrator ports with MockRuntime, usage tracking, and the
+capstone kernel-flow integration test (Goal → Task → Dependency → Agent →
+Execution → Events → KPI).
 
 ## Quickstart
 

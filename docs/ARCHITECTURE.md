@@ -49,14 +49,18 @@ polsia/
 
 ## 4. Key abstractions (ports)
 
-| Port | Purpose | Phase 1 implementation | Future implementations |
+| Port | Purpose | Current implementation | Future implementations |
 |---|---|---|---|
-| Repository ports (`core/tenancy/ports.py`) | Persist aggregates | SQLAlchemy repos | in-memory fakes (tests) |
-| `EventBus` (`core/shared/events.py`) | Publish/subscribe domain events | in-process pub/sub | durable bus (Phase 2) |
-| `MemoryStore` | write/read/search/update/delete/summarize | — | pgvector, vector DBs (Phase 2) |
-| `ToolGateway` | discover/authorize/execute/validate/audit | — | MCP, web, email, … (Phase 2+) |
-| `AgentRuntime` | create_session/execute_task/spawn/… | — | Hermes adapter, mocks (Phase 3–4) |
-| `PermissionEngine` | allow/deny/escalate on actions | — | policy engine (Phase 2) |
+| Repository ports (`core/tenancy`, `core/planning`, `core/tasks`, `core/registry`, `core/permissions`, `core/cost`) | Persist aggregates | SQLAlchemy repos | in-memory fakes (tests) |
+| `EventBus` (`core/shared/events.py`) | Publish/subscribe domain events (sync, ADR-0005) | in-process pub/sub | durable/outbox bus (later) |
+| `EventStore` (`core/shared/events.py`) | Durable event persistence (ADR-0005) | `SqlAlchemyEventStore` (events table) | outbox dispatcher |
+| `MemoryPort` (`core/memory/ports.py`) | store/retrieve/search/delete/list, company-scoped | DB-backed keyword store | pgvector, OpenViking |
+| `RuntimePort` (`core/runtime/ports.py`) | execute an agent/skill task | `MockRuntime` | custom/hosted runtimes |
+| `ModelPort` (`core/runtime/ports.py`) | generate/stream, provider-neutral | `NullModelProvider` | any vendor SDK adapter |
+| `SchedulerPort` (`core/scheduling/__init__.py`) | immediate/at/periodic/after-event/condition | `StubScheduler` | cron/Celery/Temporal worker |
+| `OrchestratorPort` (`core/scheduling/__init__.py`) | goal → task decomposition | `DeterministicOrchestrator` | Phase 3 CEO planner |
+| `CostCalculator` (`core/cost/ports.py`) | estimate execution cost | `NullCostCalculator` | pricing adapters |
+| `PermissionEngine` (`services/permissions.py`) | allow/deny/approval_required, deny-by-default | policy engine (Phase 2) | external policy engines |
 
 ## 5. Identity & tenancy model
 
@@ -71,6 +75,26 @@ Organization  ── 1:N ──  Company (cmp_…)
   explicit parameter — there is no implicit global tenant.
 - Authorization: a user may act on an organization only through an
   `OrgMembership` (owner > admin > member).
+
+## 5b. Phase 2 — OS core primitives (company-scoped)
+
+```
+Company ─┬─ Goals (state machine; optional parent) ── KPIs (direction: increase/decrease/maintain;
+         │   deterministic evaluator → not_started/on_track/at_risk/achieved/missed)
+         ├─ Tasks (state machine; explicit dependencies gate pending→ready) ── Executions (append-only attempts)
+         ├─ Agents (company-scoped configuration; free-form type)
+         ├─ Permissions (allow/deny/approval_required; deny-by-default) ── Approvals (human-in-the-loop)
+         ├─ Memory records (company-scoped, keyword-search port)
+         └─ Usage records (per-execution, provider-neutral cost abstraction)
+Platform-global registries: Skills, Tools, Models (versioned, unique name@version).
+Global availability ≠ authorization — a registered capability implies no usage right
+(the PermissionEngine gates agent → tool/action at runtime).
+```
+
+State machines live in the domain (`GOAL_STATUS_TRANSITIONS`,
+`TASK_STATUS_TRANSITIONS`, `EXECUTION_STATUS_TRANSITIONS`) and are the only
+transition authority. Durable events: every Phase 2 mutation persists its
+envelope to the `events` table (ADR-0005) *before* dispatching on the bus.
 
 ## 6. Company model (business-agnostic)
 
@@ -104,7 +128,16 @@ bus can replace the adapter without touching services.
 - `/healthz` (liveness) and `/readyz` (DB connectivity) endpoints.
 - Coverage, lint, typecheck, and layer-boundary gates run in CI.
 
-## 10. Subagent orchestration policy
+## 10. Durable events (ADR-0005)
+
+All Phase 2 mutations emit `EventEnvelope`s that are persisted to the
+`events` table via the `EventStore` port **first** (`emit()` helper: mutation
+→ persist → dispatch), then dispatched on the synchronous in-process bus.
+`append` participates in the caller's transaction: a rolled-back mutation
+leaves no event behind. Phase 0–1 (tenancy) events are dispatched but not yet
+durably persisted (documented debt).
+
+## 11. Subagent orchestration policy
 
 See `CONTRIBUTING.md`. Architecture decisions are centralized with the Lead
 Architect; subagents execute scoped tasks and never integrate their own work.

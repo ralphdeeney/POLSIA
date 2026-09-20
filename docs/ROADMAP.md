@@ -17,15 +17,23 @@ later phases are architectural targets that Phases 0–1 are shaped to support.
 - **Exit:** full flow register → org → member → company → status transition
   works via API; isolation tests prove cross-tenant denial; CI green.
 
-## Phase 2 — Autonomous OS core (next)
+## Phase 2 — Autonomous OS core ✅ (complete)
 - CompanyState aggregate with versioned snapshots; Goal, KPI, Task engines.
 - Agent / Skill / Prompt registries (registration infrastructure only — no
   business specialist agents).
 - Durable event bus with subscriptions; MemoryStore port (pgvector adapter);
   ToolGateway port (MCP adapter); PermissionEngine (allow/deny/escalate);
   AgentRuntime port with mock adapter.
-- **Entry:** Phase 1 merged. **Exit:** engines unit+integration tested; core
-  remains business-agnostic (review-verified).
+- **Delivered:** Goals (state machine) + KPIs (deterministic evaluator);
+  Tasks + dependencies (readiness gating) + append-only Executions;
+  Agent/Skill/Tool/Model registries (C2 scoping, name@version); Permissions +
+  PermissionEngine (deny-by-default) + Approvals; MemoryPort + DB keyword
+  adapter; Runtime/Model/Scheduler/Orchestrator ports + MockRuntime +
+  capstone kernel-flow test; durable events (C1a: EventStore + events table +
+  ADR-0005); UsageRecord + CostCalculator port; Phase 2 isolation-matrix
+  security suite.
+- **Entry:** Phase 1 merged. **Exit:** all slices implemented, quality gates
+  green, core business-agnostic (review-verified).
 
 ## Phase 3 — CEO + orchestration engine
 - Generic CEO component: input (state, goals, KPIs, memory, events, agent
