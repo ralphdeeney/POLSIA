@@ -10,7 +10,6 @@ from polsia.adapters.events import InProcessEventBus
 from polsia.adapters.persistence.registry_repositories import SqlAlchemyAgentRepository
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
-    SqlAlchemyGoalRepository,
     SqlAlchemyKpiRepository,
     SqlAlchemyMembershipRepository,
     SqlAlchemyUserRepository,
@@ -96,7 +95,6 @@ async def run_one_execution(
     domain_user: DomainUser = stored
     companies = SqlAlchemyCompanyRepository(session)
     memberships = SqlAlchemyMembershipRepository(session)
-    goals = SqlAlchemyGoalRepository(session)
     kpis = SqlAlchemyKpiRepository(session)
     tasks = SqlAlchemyTaskRepository(session)
     deps = SqlAlchemyTaskDependencyRepository(session)

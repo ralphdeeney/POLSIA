@@ -94,7 +94,9 @@ class TestUsageRecordEntity:
         assert record.estimated_cost is None
 
     def test_negative_counts_rejected(self) -> None:
-        with pytest.raises(Exception):
+        from polsia.core.shared.errors import ValidationError
+
+        with pytest.raises(ValidationError):
             UsageRecord.create(
                 company_id=CompanyId.generate(),
                 execution_id=TaskExecutionId.generate(),

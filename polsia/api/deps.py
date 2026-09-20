@@ -204,6 +204,7 @@ def get_company_service(request: Request, session: SessionDep) -> CompanyService
         companies=SqlAlchemyCompanyRepository(session),
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
+        store=SqlAlchemyEventStore(session),
     )
 
 

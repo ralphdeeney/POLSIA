@@ -30,7 +30,7 @@ from polsia.core.shared.errors import (
     OrganizationNotFoundError,
     UserNotFoundError,
 )
-from polsia.core.shared.events import EventBus, EventEnvelope
+from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import CompanyId, OrganizationId, UserId
 from polsia.core.tenancy.entities import Company, Organization, OrgMembership, User
 from polsia.core.tenancy.ports import (
@@ -49,21 +49,27 @@ def _now(clock: Clock | None) -> dt.datetime | None:
     return clock() if clock is not None else None
 
 
-def _publish(
+async def _publish(
     bus: EventBus,
+    store: EventStore | None,
     event_type: str,
     *,
     organization_id: OrganizationId,
     company_id: CompanyId | None = None,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    bus.publish(
+    """Shared publish path (ADR-0005): persist the envelope durably first,
+    then dispatch on the synchronous in-process bus. ``store=None`` keeps the
+    Phase 0-1 dispatch-only behavior for callers that opt out."""
+    await emit(
+        bus,
+        store,
         EventEnvelope(
             event_type=event_type,
             organization_id=organization_id,
             company_id=company_id,
             payload=payload,
-        )
+        ),
     )
 
 
@@ -77,10 +83,12 @@ class OrganizationService:
         bus: EventBus,
         clock: Clock | None = None,
         users: UserRepository | None = None,
+        store: EventStore | None = None,
     ) -> None:
         self._organizations = organizations
         self._memberships = memberships
         self._bus = bus
+        self._store = store
         self._clock = clock
         # Optional: when wired, add_member verifies the target user exists
         # (404) instead of relying on the FK constraint (which surfaces as a
@@ -128,8 +136,9 @@ class OrganizationService:
                 role=MembershipRole.OWNER,
             )
         )
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "organization.created",
             organization_id=organization.id,
             payload={
@@ -166,8 +175,9 @@ class OrganizationService:
             organization_id=organization_id, user_id=new_user_id, role=role
         )
         await self._memberships.add(membership)
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "membership.created",
             organization_id=organization_id,
             payload={
@@ -183,8 +193,9 @@ class OrganizationService:
         organization = await self._authorize(actor, organization_id, MembershipRole.ADMIN)
         renamed = organization.rename(name)
         await self._organizations.update(renamed)
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "organization.renamed",
             organization_id=organization_id,
             payload={"name": renamed.name},
@@ -231,10 +242,12 @@ class CompanyService:
         memberships: MembershipRepository,
         bus: EventBus,
         clock: Clock | None = None,
+        store: EventStore | None = None,
     ) -> None:
         self._companies = companies
         self._memberships = memberships
         self._bus = bus
+        self._store = store
         self._clock = clock
 
     # -- queries ----------------------------------------------------------
@@ -285,8 +298,9 @@ class CompanyService:
             now=_now(self._clock),
         )
         await self._companies.add(company)
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "company.created",
             organization_id=organization_id,
             company_id=company.id,
@@ -325,8 +339,9 @@ class CompanyService:
         if configuration is not None:
             company = company.update_configuration(configuration)
         await self._companies.update(company)
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "company.updated",
             organization_id=organization_id,
             company_id=company_id,
@@ -352,8 +367,9 @@ class CompanyService:
         previous = company.status
         updated = company.transition_status(new_status)
         await self._companies.update(updated)
-        _publish(
+        await _publish(
             self._bus,
+            self._store,
             "company.status_changed",
             organization_id=organization_id,
             company_id=company_id,
