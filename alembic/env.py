@@ -5,9 +5,11 @@ URL resolution order:
 2. `sqlalchemy.url` in alembic.ini, if not the placeholder
 3. `Settings.database_url` (reads POLSIA_DATABASE_URL env var / .env)
 """
+
 from __future__ import annotations
 
 import asyncio
+import importlib
 from logging.config import fileConfig
 
 from alembic import context
@@ -24,6 +26,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Model metadata for autogenerate support.
+importlib.import_module("polsia.adapters.persistence.decision_models")
 target_metadata = Base.metadata
 
 PLACEHOLDER = "__POLSIA_DATABASE_URL__"

@@ -78,6 +78,10 @@ class TaskExecutionId(_PrefixedId):
     prefix = "tex"
 
 
+class DecisionRecordId(_PrefixedId):
+    prefix = "dcr"
+
+
 class AgentId(_PrefixedId):
     prefix = "agt"
 

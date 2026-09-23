@@ -186,6 +186,20 @@ class OrchestrationService:
             )
         raise ValidationError("no selectable agent is registered for this company")
 
+    async def authorize_execution(
+        self,
+        actor: User,
+        organization_id: OrganizationId,
+        company_id: CompanyId,
+        task_id: Any,
+    ) -> Agent:
+        """Authorize one task attempt without creating an execution or calling runtime."""
+        await self._scope.require_company(actor, organization_id, company_id)
+        task = await self._tasks.get_task(actor, organization_id, company_id, task_id)
+        agent = await self.select_agent(actor, organization_id, company_id, task)
+        await self._enforce_execution_allowed(actor, organization_id, company_id, task, agent)
+        return agent
+
     async def execute_task(
         self,
         actor: User,
