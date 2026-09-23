@@ -88,7 +88,7 @@ class Decision:
         model_reference: str | None = None,
         cycle_id: str | None = None,
         now: dt.datetime | None = None,
-    ) -> "Decision":
+    ) -> Decision:
         decision = Decision(
             company_id=company_id,
             decision_type=decision_type,

@@ -166,7 +166,9 @@ class PriorityEngine:
             else any(a.goal is None for a in _attention_kpis(obs))
         )
         if has_kpi_attention:
-            terms.append((f"kpi_attention={p.kpi_attention_value:.1f}", p.kpi_attention))
+            terms.append(
+                (f"kpi_attention={p.kpi_attention_value:.1f}", p.weight_kpi * p.kpi_attention_value)
+            )
 
         return self._assemble("task", task, terms)
 

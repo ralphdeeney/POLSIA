@@ -13,13 +13,12 @@ import dataclasses
 import datetime as dt
 from typing import Any, Protocol
 
-from polsia.core.planning.entities import Goal
-from polsia.core.shared.errors import ValidationError, NotFoundError
+from polsia.core.planning.ports import GoalRepository
+from polsia.core.shared.errors import NotFoundError, ValidationError
 from polsia.core.shared.ids import CompanyId, GoalId
 from polsia.core.tasks.entities import Task
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
-from polsia.core.planning.ports import GoalRepository
 from polsia.services.planning import _CompanyScope
 from polsia.services.tasks import TaskService
 

@@ -10,7 +10,7 @@ from typing import Any
 
 from polsia.core.ceo.observation import CompanyObservation
 from polsia.core.planning.entities import Goal, Kpi
-from polsia.core.planning.values import GoalStatus, KpiDirection, KpiStatus, Priority
+from polsia.core.planning.values import KpiDirection, KpiStatus, Priority
 from polsia.core.shared.ids import CompanyId, OrganizationId
 from polsia.core.tasks.entities import Task, TaskStatus
 from polsia.services.prioritization import PriorityEngine, PriorityPolicy

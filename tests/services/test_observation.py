@@ -29,12 +29,12 @@ from polsia.adapters.persistence.task_repositories import (
     SqlAlchemyTaskDependencyRepository,
     SqlAlchemyTaskRepository,
 )
-from polsia.core.auth.service import AuthService
 from polsia.adapters.security.passwords import BcryptPasswordHasher
+from polsia.core.auth.service import AuthService
 from polsia.core.permissions.values import PermissionDecision
-from polsia.core.planning.values import GoalStatus, KpiDirection, KpiStatus, Priority
+from polsia.core.planning.values import GoalStatus, KpiDirection, Priority
 from polsia.core.shared.ids import CompanyId
-from polsia.core.tenancy.entities import Company, OrgMembership, Organization, User
+from polsia.core.tenancy.entities import Company, Organization, OrgMembership, User
 from polsia.core.tenancy.values import MembershipRole
 from polsia.infra.db import create_all_metadata
 from polsia.services.observation import CompanyStateObserver, ObservationLimits
@@ -134,7 +134,7 @@ async def _seed_rich_company(env: dict[str, Any], company_id: CompanyId) -> None
     user, org = env["user"], env["org"]
     goals = env["goals"]
     goal = goals.__class__  # placeholder to satisfy linters; real creation below
-    from polsia.core.planning.entities import Goal, Kpi
+    from polsia.core.planning.entities import Goal
 
     active_goal = Goal.create(
         company_id=company_id, title="Active goal", priority=Priority.HIGH
@@ -167,7 +167,7 @@ async def _seed_rich_company(env: dict[str, Any], company_id: CompanyId) -> None
 
     task_service = env["task_service"]
     # standalone task: no dependencies -> ready immediately (dependency gating)
-    ready = await task_service.create_task(user, org.id, company_id, title="ready task")
+    await task_service.create_task(user, org.id, company_id, title="ready task")
     failed = await task_service.create_task(
         user, org.id, company_id, title="failed task", max_attempts=1
     )
@@ -196,7 +196,7 @@ async def _seed_rich_company(env: dict[str, Any], company_id: CompanyId) -> None
 
 class TestObservation:
     async def test_bounded_sections_and_classification(self, env: dict[str, Any]) -> None:
-        user, org, company = env["user"], env["org"], env["company1"]
+        org, company = env["org"], env["company1"]
         await _seed_rich_company(env, company.id)
         obs = await env["observer"].observe(org.id, company.id)
 
@@ -226,7 +226,7 @@ class TestObservation:
         int(obs.digest, 16)
 
     async def test_digest_is_stable_for_same_state(self, env: dict[str, Any]) -> None:
-        user, org, company = env["user"], env["org"], env["company1"]
+        org, company = env["org"], env["company1"]
         await _seed_rich_company(env, company.id)
         now = __import__("datetime").datetime(2026, 9, 20, tzinfo=__import__("datetime").UTC)
         obs1 = await env["observer"].observe(org.id, company.id, now=now)
@@ -292,7 +292,7 @@ class TestObservation:
     async def test_to_dict_is_serializable_summary(self, env: dict[str, Any]) -> None:
         import json as _json
 
-        user, org, company = env["user"], env["org"], env["company1"]
+        org, company = env["org"], env["company1"]
         await _seed_rich_company(env, company.id)
         obs = await env["observer"].observe(org.id, company.id)
         payload = obs.to_dict()

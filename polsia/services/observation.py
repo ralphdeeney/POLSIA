@@ -28,6 +28,7 @@ from polsia.core.planning.values import GoalStatus, KpiStatus
 from polsia.core.registry.ports import AgentRepository
 from polsia.core.shared.events import utcnow
 from polsia.core.shared.ids import CompanyId, OrganizationId, TaskId
+from polsia.core.tasks.entities import Task
 from polsia.core.tasks.ports import TaskDependencyRepository, TaskRepository
 from polsia.core.tasks.values import TaskStatus
 
@@ -133,7 +134,7 @@ class CompanyStateObserver:
         attention.sort(key=lambda a: (severity[a.kpi.status], a.kpi.name))
 
         all_tasks = await self._tasks.list_for_company(company_id)
-        by_status: dict[TaskStatus, list] = {s: [] for s in TaskStatus}
+        by_status: dict[TaskStatus, list[Task]] = {s: [] for s in TaskStatus}
         for t in all_tasks:
             by_status[t.status].append(t)
 
