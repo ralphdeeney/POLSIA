@@ -38,6 +38,7 @@ from polsia.adapters.security.passwords import BcryptPasswordHasher
 from polsia.core.auth.service import AuthService
 from polsia.core.permissions.errors import ApprovalRequired, PermissionDenied
 from polsia.core.permissions.values import PermissionDecision
+from polsia.core.shared.errors import ValidationError
 from polsia.core.shared.ids import ApprovalId
 from polsia.core.tenancy.entities import Company, Organization, OrgMembership, User
 from polsia.core.tenancy.values import MembershipRole
@@ -316,3 +317,56 @@ class TestExecutionGate:
         with pytest.raises(PermissionDenied):
             await env["orchestration"].execute_task(user, org.id, company2.id, task2.id)
         _ = agent2
+
+    async def test_verification_failure_fails_execution(self, env: dict[str, Any]) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        task = await env["task_service"].create_task(
+            user,
+            org.id,
+            company.id,
+            title="must return structured field",
+            metadata={"verification": {"required_output_fields": ["receipt_id"]}},
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        updated_task, execution, result = await env["orchestration"].execute_task(
+            user, org.id, company.id, task.id
+        )
+        assert updated_task.status.value == "failed"
+        assert execution.status.value == "failed"
+        assert result.status.value == "failed"
+        assert "receipt_id" in (result.error or "")
+
+    async def test_declared_task_capability_must_be_supported(self, env: dict[str, Any]) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        task = await env["task_service"].create_task(
+            user,
+            org.id,
+            company.id,
+            title="requires capability",
+            assigned_skill="specialized-capability@1.0.0",
+            assigned_agent_id=env["agent"].id,
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        with pytest.raises(ValidationError, match="does not declare required capability"):
+            await env["orchestration"].execute_task(user, org.id, company.id, task.id)
+        assert await env["executions_for"](task.id) == []

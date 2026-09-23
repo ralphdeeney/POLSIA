@@ -450,6 +450,7 @@ class TestCapstoneKernelFlow:
             org_id,
             company_id,
             name="audited",
+            capabilities=["web-research@1.0.0"],
             model_reference="generic-llm@1.0.0",
             system_instructions="be terse",
         )

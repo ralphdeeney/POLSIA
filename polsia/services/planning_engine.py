@@ -30,6 +30,7 @@ class VerificationCriteria:
     expected_outcome: str
     success_metric: str | None = None  # generic; interpreted by later stages
     kpi_name: str | None = None  # optional generic KPI to observe
+    required_output_fields: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -88,6 +89,16 @@ class Plan:
                     "depends_on_indexes": t.depends_on_indexes,
                     "requires_approval": t.requires_approval,
                     "assigned_skill": t.assigned_skill,
+                    "verification": (
+                        {
+                            "expected_outcome": t.verification.expected_outcome,
+                            "success_metric": t.verification.success_metric,
+                            "kpi_name": t.verification.kpi_name,
+                            "required_output_fields": list(t.verification.required_output_fields),
+                        }
+                        if t.verification is not None
+                        else None
+                    ),
                 }
                 for t in self.tasks
             ],
@@ -152,6 +163,12 @@ class PlanningEngine:
         )
         drafts: list[PlanTaskDraft] = []
         for raw in decomposition.tasks:
+            metadata = dict(raw.metadata or {})
+            required_fields = metadata.get("required_output_fields", [])
+            if not isinstance(required_fields, list) or any(
+                not isinstance(field, str) or not field.strip() for field in required_fields
+            ):
+                raise ValidationError(f"task {raw.title!r} has malformed required_output_fields")
             drafts.append(
                 PlanTaskDraft(
                     title=raw.title,
@@ -160,12 +177,13 @@ class PlanningEngine:
                     assigned_skill=raw.assigned_skill,
                     verification=VerificationCriteria(
                         expected_outcome=raw.title,
-                        success_metric=str(raw.metadata.get("success_metric"))
-                        if raw.metadata.get("success_metric")
+                        success_metric=str(metadata.get("success_metric"))
+                        if metadata.get("success_metric")
                         else None,
+                        required_output_fields=list(required_fields),
                     ),
-                    requires_approval=bool(raw.metadata.get("requires_approval")),
-                    metadata=dict(raw.metadata or {}),
+                    requires_approval=bool(metadata.get("requires_approval")),
+                    metadata=metadata,
                 )
             )
         plan = Plan(
@@ -192,6 +210,11 @@ class PlanningEngine:
         created: list[Task] = []
         for draft in plan.tasks:
             depends_on = [created[idx].id for idx in draft.depends_on_indexes if idx < len(created)]
+            metadata = dict(draft.metadata)
+            if draft.verification is not None:
+                metadata["verification"] = {
+                    "required_output_fields": list(draft.verification.required_output_fields)
+                }
             task = await tasks_service.create_task(
                 actor,
                 organization_id,
@@ -200,7 +223,7 @@ class PlanningEngine:
                 description=draft.description,
                 goal_id=plan.goal_id,
                 assigned_skill=draft.assigned_skill,
-                metadata=draft.metadata,
+                metadata=metadata,
                 depends_on=depends_on,
             )
             created.append(task)

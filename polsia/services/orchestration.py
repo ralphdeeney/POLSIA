@@ -32,6 +32,7 @@ from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import _CompanyScope
 from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.usage import UsageService
+from polsia.services.verification import ResultVerifier
 
 
 class OrchestrationService:
@@ -59,6 +60,7 @@ class OrchestrationService:
         store: EventStore | None = None,
         usage_service: UsageService | None = None,
         approvals: ApprovalService | None = None,
+        verifier: ResultVerifier | None = None,
     ) -> None:
         # SECURITY (Phase 3, mandate §10): the permission engine is a REQUIRED
         # collaborator. execute_task consults it BEFORE any execution starts;
@@ -80,6 +82,7 @@ class OrchestrationService:
         # opens a pending Approval (task left in its current status — the
         # state machine forbids ready→blocked); unwired, it raises like deny.
         self._approvals = approvals
+        self._verifier = verifier or ResultVerifier()
 
     async def plan_goal(
         self,
@@ -160,10 +163,27 @@ class OrchestrationService:
                 raise NotFoundError(f"agent {candidate_id} not found")
             if not agent.is_selectable():
                 raise ValidationError(f"agent {candidate_id} is not selectable (disabled)")
+            if task.assigned_skill and task.assigned_skill not in agent.capabilities:
+                raise ValidationError(
+                    f"agent {candidate_id} does not declare required capability "
+                    f"{task.assigned_skill!r}"
+                )
             return agent
-        for agent in await self._agents.list_for_company(company_id):
-            if agent.is_selectable():
-                return agent
+        candidates = [
+            agent
+            for agent in await self._agents.list_for_company(company_id)
+            if agent.is_selectable()
+        ]
+        if task.assigned_skill:
+            candidates = [
+                agent for agent in candidates if task.assigned_skill in agent.capabilities
+            ]
+        if candidates:
+            return min(candidates, key=lambda candidate: str(candidate.id))
+        if task.assigned_skill:
+            raise ValidationError(
+                f"no selectable agent declares required capability {task.assigned_skill!r}"
+            )
         raise ValidationError("no selectable agent is registered for this company")
 
     async def execute_task(
@@ -221,18 +241,31 @@ class OrchestrationService:
             system_instructions=agent.system_instructions,
         )
         result = await self._runtime.execute(request)
+        verification = self._verifier.verify(result, task.metadata.get("verification", {}))
 
-        if result.is_success():
+        if result.is_success() and verification.passed:
             task, execution = await self._executions.complete_execution(
                 actor, organization_id, company_id, execution.id, output=result.output
             )
         else:
+            error = result.error if not result.is_success() else verification.reason
             task, execution = await self._executions.fail_execution(
-                actor, organization_id, company_id, execution.id, error=result.error
+                actor, organization_id, company_id, execution.id, error=error
             )
+            if result.is_success():
+                result = RuntimeResult.failed(
+                    verification.reason,
+                    runtime=result.runtime,
+                    model=result.model,
+                    duration_seconds=result.duration_seconds,
+                    metadata={**result.metadata, "verification_failed": True},
+                )
 
         await self._record_usage(organization_id, company_id, task, execution, result, agent)
-        await self._refresh_goal_kpis(actor, organization_id, company_id, task, execution, result)
+        if verification.passed:
+            await self._refresh_goal_kpis(
+                actor, organization_id, company_id, task, execution, result
+            )
         await self._publish(
             "orchestration.executed",
             organization_id,
