@@ -59,6 +59,7 @@ polsia/
 | `ModelPort` (`core/runtime/ports.py`) | generate/stream, provider-neutral | `NullModelProvider` | any vendor SDK adapter |
 | `SchedulerPort` (`core/scheduling/__init__.py`) | immediate/at/periodic/after-event/condition | `StubScheduler` | cron/Celery/Temporal worker |
 | `OrchestratorPort` (`core/scheduling/__init__.py`) | goal → task decomposition | `DeterministicOrchestrator` | Phase 3 CEO planner |
+| `DecisionRecordRepository` (`core/ceo/records.py`) | append and tenant-scoped read of validated CEO decisions | SQLAlchemy `decision_records` table | — |
 | `CostCalculator` (`core/cost/ports.py`) | estimate execution cost | `NullCostCalculator` | pricing adapters |
 | `PermissionEngine` (`services/permissions.py`) | allow/deny/approval_required, deny-by-default | policy engine (Phase 2) | external policy engines |
 
@@ -137,7 +138,78 @@ All Phase 2 mutations emit `EventEnvelope`s that are persisted to the
 leaves no event behind. Phase 0–1 (tenancy) events are dispatched but not yet
 durably persisted (documented debt).
 
-## 11. Subagent orchestration policy
+## 11. Phase 3 — bounded CEO loop and event-trigger boundary
+
+Phase 3 is being delivered in slices; see `ROADMAP.md` for implementation
+status. The current committed Slice 6 implementation provides typed CEO
+decisions and append-only, organization/company-scoped `DecisionRecord`s in the
+`decision_records` table (ADR-0007). Records include the decision payload and type,
+rationale/confidence/model reference, cycle ID, observation digest, outcome
+context, and timestamps. The combined payload and outcome context are limited to
+8 KiB of compact UTF-8 JSON at both domain and response DTO boundaries. The
+internal autonomous loop is finite and actor-authorized, records decisions and
+outcomes, and uses the shared execution-authorization boundary before execution.
+`ExecutionService.start_execution` requires and invokes that same boundary before
+any task transition or attempt write; no direct service caller can bypass it.
+The public task-start endpoint remains an attempt-record API and does not invoke a
+runtime. Only an explicit permission `ALLOW` proceeds; deny and approval-required
+outcomes create no attempt, and approvals are never auto-approved.
+
+The approved Slice 7 trigger design is internal. The current working tree has
+validated `SafetyLimits`, `EventTriggerPolicy`, and `SafetyGuard` contracts:
+policies are disabled by default, match only the explicit `task.ready` /
+`task.failed` allowlist, and limits cover actions, tasks, executions, retries,
+event age, and future clock skew. `SafetyGuard` checks tenant/company scope,
+active company and policy, event type and age, decision/task binding and
+readiness, and cycle counters. PermissionEngine / orchestration authorization
+remains authoritative: only an explicit `ALLOW` may proceed; deny and
+approval-required outcomes stop dispatch, and approvals are never
+auto-approved.
+
+Slice 7 persists a unique `(policy_id, event_id)` row and a stable cycle ID,
+suppresses same-envelope redelivery, and records recursive lineage when
+suppressing descendant events. Delivery rows are leased, fenced, and bounded
+at-least-once (ADR-0011): `claim` inserts the unique row or takes over a
+retryable (`interrupted`) or expired-lease `claimed` row while attempts remain,
+incrementing a monotonic `fencing_token`; `finish` is fenced on that token so a
+stale worker cannot overwrite the newer owner's outcome. Transient faults are
+marked `interrupted` (reclaimable) until the attempt budget is spent, then
+`failed`; deterministic rejections are terminal. Catch-up selects bounded
+eligible durable envelopes, including expired leases, and excludes terminal rows
+so they never consume the catch-up budget. Recovery targets at-least-once
+processing with idempotent business effects, not exactly-once: an expired lease
+can permit a concurrent duplicate cycle, the fenced worker only cannot record
+it, and the task state machine plus the stable cycle ID bound the effect.
+Dispatcher lifecycle subscription/catch-up/drain is enabled only for an
+explicitly injected internal dispatcher; the default production composition does
+not construct a runtime/loop/dispatcher. SQLite-backed adversarial tests cover
+forged task/actor/runtime payload fields, one-action caps, retry-cap rejection
+before attempt creation, lease expiry, stale-worker fencing, bounded retry, and
+cross-company dispatch isolation. Plan materialization validates the complete
+plan, company and goal scope, and all dependency references before its first
+task write. Event payloads are untrusted and do not select tasks or grant
+permissions. There is no public replay operation or trigger-policy mutation API.
+Cycle summaries are derived from persisted DecisionRecords; see ADR-0008,
+ADR-0009, and ADR-0011.
+
+The Slice 8 query boundary is authenticated, nested organization/company `GET`
+only: bounded decision history, cycle summaries, and observation summary. Its
+actor-authorized query service and mounted DTO routes authorize membership and
+company ownership before reading. Observation response lists are capped while
+count fields, including `kpis_total`, report uncapped totals. The observer now
+pushes task status filters, limits, and the total count into the tenant-scoped,
+indexed task query, so observation task reads are bounded by the configured
+limits plus one count query rather than the task-table size
+(`TaskRepository.list_for_company(status=..., limit=...)` and
+`count_for_company`). The observation digest is versioned to v2: it hashes the
+bounded observation content plus totals instead of every task row (ADR-0012).
+Goals, KPIs, agents, and approvals remain unbounded but are small by design. The
+prior "reads and digest are unbounded" limitation is therefore resolved for
+tasks; no public business-specific route, trigger mutation route, or replay
+route is part of the boundary. See `ROADMAP.md` for exact slice and validation
+status.
+
+## 12. Subagent orchestration policy
 
 See `CONTRIBUTING.md`. Architecture decisions are centralized with the Lead
 Architect; subagents execute scoped tasks and never integrate their own work.
