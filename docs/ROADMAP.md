@@ -84,10 +84,16 @@ phases remain architectural targets.
   introduced.
 
 ## Phase 4 — Agent runtime integration
-- Pluggable runtime adapters behind the Phase 2/3 `AgentRuntime` port
-  (e.g. Hermes adapter once its API is defined).
-- Dependency-ordered plan: see `docs/PHASE4-PLAN.md`.
-- **Exit:** runtime swap requires zero changes above the port.
+- Pluggable runtime adapters behind the Phase 2/3 `AgentRuntime` port.
+- Delivered this pass (in place of the Hermes adapter, per assignment):
+  native bounded agent runtime + strict tool gateway (ADR-0013),
+  OpenAI-compatible model adapter (ADR-0014), runtime conformance suite,
+  E2E through the real orchestration stack, agent/routing evaluation
+  harness, optional advisory decision layer (ADR-0015).
+- Dependency-ordered plan: see `docs/PHASE4-PLAN.md` (implementation status
+  table included). Live model smoke test remains opt-in / NOT RUN.
+- **Exit:** runtime swap requires zero changes above the port (conformance
+  suite passes for `MockRuntime` and `NativeAgentRuntime`).
 
 ## Phase 5 — Generic specialist agent framework
 - Registration path for domain specialist agents (capabilities, skills,

@@ -209,6 +209,37 @@ tasks; no public business-specific route, trigger mutation route, or replay
 route is part of the boundary. See `ROADMAP.md` for exact slice and validation
 status.
 
+### 11b. Phase 4 — native agent runtime (bounded, provider-neutral)
+
+Phase 4 added the first real executor behind the `RuntimePort`/`ModelPort`
+contracts while preserving every Phase 2/3 boundary:
+`NativeAgentRuntime` (`polsia/adapters/agent_runtime/`) is an explicit state
+machine with hard budgets (iterations, elapsed time, cumulative tokens, cost,
+tool calls), a verifiable-completion contract (a model claiming completion
+without evidence fails the run), sanitized traces and a deterministic
+idempotency/trace identity (ADR-0013). Tool calls execute only through the
+strict `ToolGateway`: read-only capabilities only, unsafe capability families
+structurally unreachable, the resolved `tool_permissions` decision set honored
+when present, and the trusted company/task context never derived from model
+output.
+
+The first real model adapter is `OpenAICompatibleModelProvider`
+(`polsia/adapters/models/`, ADR-0014): configurable base URL/key env/model,
+bounded retries with backoff, normalized errors, conservative capability
+detection, and honest token/cost accounting (nothing is fabricated when a
+provider omits usage). `NullModelProvider`, `ScriptedModelProvider` and the
+Phase 3 `MockRuntime` remain the test/baseline paths.
+
+Prompt construction is versioned and bounded (`prompt_composer.py` +
+`polsia/adapters/runtime/prompts/*.md`), reusing the existing Skills Registry
+and tenant-scoped memory as input sections. An optional, advisory-only
+decision layer (`polsia/core/decision/`, `polsia/adapters/decision/`,
+ADR-0015) supports deterministic routing today and a lazily injected Laya
+backend later; advisories can never grant permissions or override budgets.
+Evaluation harnesses live in `polsia/eval/` with the runnable entry point
+`scripts/run_agent_evaluations.py`. Production autonomous composition remains
+unwired: the runtime is injected explicitly, exactly as in Phase 3.
+
 ## 12. Subagent orchestration policy
 
 See `CONTRIBUTING.md`. Architecture decisions are centralized with the Lead

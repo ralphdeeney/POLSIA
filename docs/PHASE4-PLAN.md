@@ -1,7 +1,8 @@
 # Phase 4 implementation plan (dependency-ordered)
 
-Status: planning document. No Phase 4 code is written during the Phase 3
-completion pass. This plan is grounded in the modules that already exist so it
+Status: partially implemented (Wave 1 + a native runtime in place of the
+Hermes adapter, per the Phase 4 assignment; see "Implementation status"
+below). This plan is grounded in the modules that already exist so it
 does not re-implement Phase 2/3 work.
 
 ## What already exists (do not rebuild)
@@ -88,6 +89,34 @@ increment that unblocks every later wave, is entirely behind existing ports, and
 needs no schema change. Exit: the runtime-contract suite passes for both
 `MockRuntime` and the Hermes adapter, and swapping the runtime requires no
 change above the port.
+
+## Implementation status (Phase 4 milestone, this branch)
+
+Delivered instead of, and disjoint from, the Hermes adapter slot per the
+assignment's architectural decision (no external agent framework mandated;
+see ADR-0013):
+
+| Plan item | Delivered as | State |
+| --- | --- | --- |
+| 1. Runtime/Model contract tests | `tests/adapters/runtime_contract.py` + `test_runtime_conformance.py` (MockRuntime and NativeAgentRuntime) | done |
+| 2–3. Transport + secret handling | `polsia/adapters/models/openai_compatible.py` (env-var credentials, redacted logging, bounded retry/backoff) + ADR-0014 | done |
+| 4. Hermes adapter | **NativeAgentRuntime** (ADR-0013) — native, provider-neutral, no frameworks | done (native instead of Hermes) |
+| 4a. Tool authorization wiring | `ToolGateway` + strict capability policy + `tool_permissions` decision-set honoring | done |
+| 5. Skills/prompt integration | `prompt_composer.py` + 6 versioned templates + Skills Registry loading | done |
+| 7. E2E through real services | `tests/integration/test_native_runtime_e2e.py` (6 tests incl. negative paths) | done |
+| 8. Optional Laya integration | `polsia/core/decision/` + `polsia/adapters/decision/` + ADR-0015 | adapter done; real-model eval **NOT RUN** |
+| 9. Agent evaluation framework | `polsia/eval/agent.py` (10 deterministic scenarios) | done |
+| 10. Routing A/B | `polsia/eval/routing.py` + fixed labeled dataset | A-arm done, accuracy 1.0, unsafe-route 0.0; Laya/LLM arms **NOT RUN** |
+| 11. E2E + negative paths | covered (deny/outage/forgery/isolation/budget) | done |
+| 11a. Live model smoke test | `scripts/live_model_smoke.py` (opt-in) | **NOT RUN** (no credentials) |
+| 14. Performance/concurrency | `tests/adapters/test_native_runtime_concurrency.py` (1/2/5/10 simulated) | done |
+| 13. Quality gates | ruff/mypy/layering/pytest 546 passed/0 failed | done |
+
+Remaining for later waves: production autonomous composition root (Wave 4,
+still intentionally unwired), Postgres-validated lease concurrency, model-backed
+`PlanEnginePort` planning intelligence (Wave 5), real Laya benchmark with
+resource measurements, live smoke test execution once credentials exist, and
+business-idea intake/blueprint generation (Wave 3, still unstarted).
 
 ## Guardrails carried forward from Phase 3
 
