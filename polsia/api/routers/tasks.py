@@ -8,6 +8,7 @@ state machine live in the domain/services.
 from __future__ import annotations
 
 from fastapi import APIRouter, status
+from fastapi.responses import JSONResponse
 
 from polsia.api.deps import (
     CurrentUser,
@@ -29,6 +30,7 @@ from polsia.api.schemas import (
     TaskStatusChange,
     TaskUpdate,
 )
+from polsia.core.permissions.errors import ApprovalRequired
 from polsia.core.planning.values import Priority
 from polsia.core.shared.ids import AgentId, GoalId, TaskExecutionId, TaskId
 
@@ -216,13 +218,26 @@ async def start_execution(
     user: CurrentUser,
     service: ExecutionServiceDep,
 ) -> ExecutionOut:
-    """Start running a task and append a new execution attempt."""
-    _, execution = await service.start_execution(
-        user,
-        parse_organization_id(org_id),
-        parse_company_id(company_id),
-        TaskId.parse(task_id),
-    )
+    """Record an authorized task attempt (authorization runs inside the service)."""
+    organization_id = parse_organization_id(org_id)
+    parsed_company_id = parse_company_id(company_id)
+    parsed_task_id = TaskId.parse(task_id)
+    try:
+        _, execution = await service.start_execution(
+            user, organization_id, parsed_company_id, parsed_task_id
+        )
+    except ApprovalRequired as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            media_type="application/problem+json",
+            content={
+                "type": "https://docs.polsia.dev/problems/approval_required",
+                "title": "approval required",
+                "status": exc.status_code,
+                "code": exc.code,
+                "detail": str(exc),
+            },
+        )  # type: ignore[return-value]
     return ExecutionOut.model_validate(execution)
 
 

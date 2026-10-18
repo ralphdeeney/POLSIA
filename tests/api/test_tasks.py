@@ -90,6 +90,50 @@ async def create_task(
     return response.json()
 
 
+async def set_execution_policy(
+    client: AsyncClient,
+    user: dict[str, Any],
+    org_id: str,
+    company_id: str,
+    decision: str,
+) -> dict[str, Any]:
+    headers = bearer(user)
+    agents_url = f"/organizations/{org_id}/companies/{company_id}/agents"
+    response = await client.get(agents_url, headers=headers)
+    assert response.status_code == 200, response.text
+    agents = response.json()
+    if not agents:
+        response = await client.post(
+            agents_url, json={"name": "api-execution-worker"}, headers=headers
+        )
+        assert response.status_code == 201, response.text
+        agents = [response.json()]
+    agent = agents[0]
+    response = await client.put(
+        f"/organizations/{org_id}/companies/{company_id}/permissions",
+        json={
+            "principal_type": "agent",
+            "principal_id": agent["id"],
+            "resource_type": "task",
+            "resource_id": None,
+            "action": "execute",
+            "decision": decision,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    return agent
+
+
+async def authorize_execution(
+    client: AsyncClient,
+    user: dict[str, Any],
+    org_id: str,
+    company_id: str,
+) -> dict[str, Any]:
+    return await set_execution_policy(client, user, org_id, company_id, "allow")
+
+
 async def run_to_completion(
     client: AsyncClient,
     user: dict[str, Any],
@@ -98,6 +142,7 @@ async def run_to_completion(
     task_id: str,
     output: dict[str, Any] | None = None,
 ) -> None:
+    await authorize_execution(client, user, org_id, company_id)
     url = executions_url(org_id, company_id) + f"/tasks/{task_id}/start"
     response = await client.post(url, json={}, headers=bearer(user))
     assert response.status_code == 201, response.text
@@ -120,6 +165,7 @@ class TestDependencyGating:
         self, client: AsyncClient
     ) -> None:
         user, org, company = await make_company(client, "bella@example.com")
+        await authorize_execution(client, user, org["id"], company["id"])
         task_a = await create_task(client, user, org["id"], company["id"], "A: research market")
         task_b = await create_task(
             client, user, org["id"], company["id"], "B: analyze", depends_on=[task_a["id"]]
@@ -146,8 +192,27 @@ class TestDependencyGating:
         )
         assert response.json()["status"] == "ready"
 
+    @pytest.mark.parametrize("forbidden", ["running", "retrying"])
+    async def test_generic_status_route_cannot_bypass_execution_gate(
+        self, client: AsyncClient, forbidden: str
+    ) -> None:
+        user, org, company = await make_company(client, f"status-{forbidden}@example.com")
+        task = await create_task(client, user, org["id"], company["id"], "guarded")
+        response = await client.post(
+            tasks_url(org["id"], company["id"]) + f"/{task['id']}/status",
+            json={"status": forbidden},
+            headers=bearer(user),
+        )
+        assert response.status_code == 422
+        unchanged = await client.get(
+            tasks_url(org["id"], company["id"]) + f"/{task['id']}", headers=bearer(user)
+        )
+        assert unchanged.json()["status"] == "ready"
+        assert unchanged.json()["attempts"] == 0
+
     async def test_chain_of_four_tasks(self, client: AsyncClient) -> None:
         user, org, company = await make_company(client, "carl@example.com")
+        await authorize_execution(client, user, org["id"], company["id"])
         a = await create_task(client, user, org["id"], company["id"], "research market")
         b = await create_task(
             client, user, org["id"], company["id"], "analyze competitors", depends_on=[a["id"]]
@@ -201,8 +266,88 @@ class TestDependencyGating:
 
 
 class TestExecutions:
+    async def test_execution_start_denied_without_attempt(self, client: AsyncClient) -> None:
+        user, org, company = await make_company(client, "execution-denied@example.com")
+        task = await create_task(client, user, org["id"], company["id"], "Denied task")
+        await set_execution_policy(client, user, org["id"], company["id"], "deny")
+
+        response = await client.post(
+            executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}/start",
+            json={},
+            headers=bearer(user),
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "permission_denied"
+        history = await client.get(
+            executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}",
+            headers=bearer(user),
+        )
+        assert history.status_code == 200
+        assert history.json() == []
+        unchanged = await client.get(
+            tasks_url(org["id"], company["id"]) + f"/{task['id']}", headers=bearer(user)
+        )
+        assert unchanged.json()["attempts"] == 0
+        assert unchanged.json()["status"] == "ready"
+        approvals = await client.get(
+            f"/organizations/{org['id']}/companies/{company['id']}/approvals",
+            headers=bearer(user),
+        )
+        assert approvals.json() == []
+
+    async def test_execution_start_approval_required_without_attempt(
+        self, client: AsyncClient
+    ) -> None:
+        user, org, company = await make_company(client, "execution-approval@example.com")
+        task = await create_task(client, user, org["id"], company["id"], "Approval task")
+        await set_execution_policy(client, user, org["id"], company["id"], "approval_required")
+
+        response = await client.post(
+            executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}/start",
+            json={},
+            headers=bearer(user),
+        )
+        assert response.status_code == 403
+        assert response.json()["code"] == "approval_required"
+        history = await client.get(
+            executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}",
+            headers=bearer(user),
+        )
+        assert history.status_code == 200
+        assert history.json() == []
+        approvals = await client.get(
+            f"/organizations/{org['id']}/companies/{company['id']}/approvals",
+            headers=bearer(user),
+        )
+        assert approvals.status_code == 200
+        assert len(approvals.json()) == 1
+        assert approvals.json()[0]["resource_id"] == task["id"]
+        unchanged = await client.get(
+            tasks_url(org["id"], company["id"]) + f"/{task['id']}", headers=bearer(user)
+        )
+        assert unchanged.json()["attempts"] == 0
+        assert unchanged.json()["status"] == "ready"
+
+    async def test_execution_start_allow_creates_only_attempt_without_runtime(
+        self, client: AsyncClient
+    ) -> None:
+        user, org, company = await make_company(client, "execution-allowed@example.com")
+        task = await create_task(client, user, org["id"], company["id"], "Allowed task")
+        agent = await authorize_execution(client, user, org["id"], company["id"])
+
+        response = await client.post(
+            executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}/start",
+            json={},
+            headers=bearer(user),
+        )
+        assert response.status_code == 201, response.text
+        assert response.json()["agent_id"] == agent["id"]
+        assert response.json()["status"] == "running"
+        assert response.json()["task_id"] == task["id"]
+
     async def test_execution_history_append_only(self, client: AsyncClient) -> None:
         user, org, company = await make_company(client, "gabe@example.com")
+        await authorize_execution(client, user, org["id"], company["id"])
         task = await create_task(client, user, org["id"], company["id"], "Fix bug", max_attempts=5)
         # attempt 1 fails
         response = await client.post(
@@ -240,6 +385,7 @@ class TestExecutions:
 
     async def test_retry_blocked_after_attempts_exhausted(self, client: AsyncClient) -> None:
         user, org, company = await make_company(client, "hope@example.com")
+        await authorize_execution(client, user, org["id"], company["id"])
         task = await create_task(client, user, org["id"], company["id"], "Fragile", max_attempts=1)
         response = await client.post(
             executions_url(org["id"], company["id"]) + f"/tasks/{task['id']}/start",

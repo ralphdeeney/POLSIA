@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import json
 from typing import Any, Protocol
 
 from polsia.core.planning.ports import GoalRepository
@@ -57,11 +58,81 @@ class Plan:
     created_at: dt.datetime = dataclasses.field(default_factory=lambda: dt.datetime.now(dt.UTC))
 
     def validate(self) -> None:
-        if not self.objective.strip():
+        if not isinstance(self.company_id, CompanyId):
+            raise ValidationError("plan company_id must be a CompanyId")
+        if not isinstance(self.goal_id, GoalId):
+            raise ValidationError("plan goal_id must be a GoalId")
+        if not isinstance(self.objective, str) or not self.objective.strip():
             raise ValidationError("plan objective must not be empty")
+        if not isinstance(self.rationale, str) or not self.rationale.strip():
+            raise ValidationError("plan rationale must not be empty")
+        if not isinstance(self.constraints, dict):
+            raise ValidationError("plan constraints must be an object")
+        try:
+            json.dumps(self.constraints, allow_nan=False)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ValidationError("plan constraints must contain valid JSON") from exc
+        if not isinstance(self.tasks, list):
+            raise ValidationError("plan tasks must be a list")
         n = len(self.tasks)
-        # dependency indexes must be within range
+        if n == 0 or n > 100:
+            raise ValidationError("plan must contain between 1 and 100 tasks")
         for idx, task in enumerate(self.tasks):
+            if not isinstance(task, PlanTaskDraft):
+                raise ValidationError(f"task {idx} must be a PlanTaskDraft")
+            if not isinstance(task.title, str) or not task.title.strip() or len(task.title) > 255:
+                raise ValidationError(f"task {idx} title must contain 1 to 255 characters")
+            if task.description is not None and (
+                not isinstance(task.description, str) or len(task.description) > 2000
+            ):
+                raise ValidationError(
+                    f"task {idx} description must be a string of at most 2000 characters"
+                )
+            if not isinstance(task.metadata, dict):
+                raise ValidationError(f"task {idx} metadata must be an object")
+            try:
+                json.dumps(task.metadata, allow_nan=False)
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise ValidationError(f"task {idx} metadata must contain valid JSON") from exc
+            if type(task.requires_approval) is not bool:
+                raise ValidationError(f"task {idx} requires_approval must be a boolean")
+            if task.assigned_skill is not None and (
+                not isinstance(task.assigned_skill, str)
+                or not task.assigned_skill.strip()
+                or len(task.assigned_skill) > 255
+            ):
+                raise ValidationError(f"task {idx} assigned_skill must contain 1 to 255 characters")
+            if task.verification is not None:
+                if not isinstance(task.verification, VerificationCriteria):
+                    raise ValidationError(f"task {idx} verification criteria are malformed")
+                if (
+                    not isinstance(task.verification.expected_outcome, str)
+                    or not task.verification.expected_outcome.strip()
+                ):
+                    raise ValidationError(
+                        f"task {idx} verification expected_outcome must not be empty"
+                    )
+                for name, value in (
+                    ("success_metric", task.verification.success_metric),
+                    ("kpi_name", task.verification.kpi_name),
+                ):
+                    if value is not None and (
+                        not isinstance(value, str) or not value.strip() or len(value) > 255
+                    ):
+                        raise ValidationError(
+                            f"task {idx} verification {name} must contain 1 to 255 characters"
+                        )
+                if not isinstance(task.verification.required_output_fields, list) or any(
+                    not isinstance(field, str) or not field.strip() or len(field) > 100
+                    for field in task.verification.required_output_fields
+                ):
+                    raise ValidationError(f"task {idx} verification output fields are malformed")
+            if not isinstance(task.depends_on_indexes, list) or any(
+                type(dep) is not int for dep in task.depends_on_indexes
+            ):
+                raise ValidationError(f"task {idx} dependency indexes must be integers")
+            if len(set(task.depends_on_indexes)) != len(task.depends_on_indexes):
+                raise ValidationError(f"task {idx} has duplicate dependency indexes")
             for dep in task.depends_on_indexes:
                 if dep < 0 or dep >= n:
                     raise ValidationError(
@@ -163,17 +234,27 @@ class PlanningEngine:
         )
         drafts: list[PlanTaskDraft] = []
         for raw in decomposition.tasks:
-            metadata = dict(raw.metadata or {})
+            if not isinstance(getattr(raw, "metadata", None), dict):
+                raise ValidationError(f"task {raw.title!r} metadata must be an object")
+            metadata = dict(raw.metadata)
+            raw_dependencies = getattr(raw, "depends_on_indexes", None)
+            if not isinstance(raw_dependencies, list):
+                raise ValidationError(
+                    f"task {raw.title!r} depends_on_indexes must be a list of integers"
+                )
             required_fields = metadata.get("required_output_fields", [])
             if not isinstance(required_fields, list) or any(
                 not isinstance(field, str) or not field.strip() for field in required_fields
             ):
                 raise ValidationError(f"task {raw.title!r} has malformed required_output_fields")
+            requires_approval = metadata.get("requires_approval", False)
+            if type(requires_approval) is not bool:
+                raise ValidationError(f"task {raw.title!r} requires_approval must be a boolean")
             drafts.append(
                 PlanTaskDraft(
                     title=raw.title,
                     description=raw.description,
-                    depends_on_indexes=list(raw.depends_on_indexes),
+                    depends_on_indexes=list(raw_dependencies),
                     assigned_skill=raw.assigned_skill,
                     verification=VerificationCriteria(
                         expected_outcome=raw.title,
@@ -182,7 +263,7 @@ class PlanningEngine:
                         else None,
                         required_output_fields=list(required_fields),
                     ),
-                    requires_approval=bool(metadata.get("requires_approval")),
+                    requires_approval=requires_approval,
                     metadata=metadata,
                 )
             )
@@ -207,14 +288,37 @@ class PlanningEngine:
         tasks_service: TaskService,
     ) -> list[Task]:
         """Persist a Plan's task drafts as real Tasks (with dependencies)."""
-        created: list[Task] = []
+        plan.validate()
+        if plan.company_id != company_id:
+            raise ValidationError("plan company does not match materialization scope")
+        await self._scope.require_company(actor, organization_id, company_id)
+        goal = await self._goals.get(company_id, plan.goal_id)
+        if goal is None:
+            raise NotFoundError(f"goal {plan.goal_id} not found in company {company_id}")
+        # Normalize and copy every draft before the first write. This keeps the
+        # preflight guarantee even when callers retain mutable plan structures.
+        prepared: list[tuple[PlanTaskDraft, dict[str, Any], tuple[int, ...]]] = []
         for draft in plan.tasks:
-            depends_on = [created[idx].id for idx in draft.depends_on_indexes if idx < len(created)]
-            metadata = dict(draft.metadata)
+            metadata = json.loads(json.dumps(draft.metadata, allow_nan=False))
+            metadata_requires = metadata.get("requires_approval")
+            if metadata_requires is not None and type(metadata_requires) is not bool:
+                raise ValidationError(
+                    f"task {draft.title!r} metadata requires_approval must be a boolean"
+                )
+            if draft.requires_approval:
+                metadata["requires_approval"] = True
             if draft.verification is not None:
                 metadata["verification"] = {
-                    "required_output_fields": list(draft.verification.required_output_fields)
+                    "expected_outcome": draft.verification.expected_outcome,
+                    "success_metric": draft.verification.success_metric,
+                    "kpi_name": draft.verification.kpi_name,
+                    "required_output_fields": list(draft.verification.required_output_fields),
                 }
+            prepared.append((draft, metadata, tuple(draft.depends_on_indexes)))
+
+        created: list[Task] = []
+        for draft, metadata, dependency_indexes in prepared:
+            depends_on = [created[idx].id for idx in dependency_indexes]
             task = await tasks_service.create_task(
                 actor,
                 organization_id,

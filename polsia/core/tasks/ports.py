@@ -6,15 +6,36 @@ from typing import Protocol
 
 from polsia.core.shared.ids import CompanyId, GoalId, TaskExecutionId, TaskId
 from polsia.core.tasks.entities import Task, TaskExecution
+from polsia.core.tasks.values import TaskStatus
 
 
 class TaskRepository(Protocol):
     async def add(self, task: Task) -> None: ...
     async def get(self, company_id: CompanyId, task_id: TaskId) -> Task | None: ...
-    async def list_for_company(self, company_id: CompanyId) -> list[Task]: ...
+    async def list_for_company(
+        self,
+        company_id: CompanyId,
+        *,
+        status: TaskStatus | None = None,
+        limit: int | None = None,
+    ) -> list[Task]:
+        """Company-scoped tasks in deterministic order.
+
+        ``status`` filters and ``limit`` bounds the query so observation never
+        materializes an unbounded task table (tenant-scoped, indexed reads).
+        """
+        ...
+
+    async def count_for_company(self, company_id: CompanyId) -> int:
+        """Total tasks for the company (tenant-scoped) without fetching rows."""
+        ...
+
     async def list_for_goal(self, company_id: CompanyId, goal_id: GoalId) -> list[Task]: ...
     async def list_dependents(self, company_id: CompanyId, task_id: TaskId) -> list[TaskId]: ...
     async def update(self, task: Task) -> None: ...
+    async def start_attempt(self, expected: Task, running: Task) -> bool:
+        """Atomically persist one authorized transition to running."""
+        ...
 
 
 class TaskDependencyRepository(Protocol):

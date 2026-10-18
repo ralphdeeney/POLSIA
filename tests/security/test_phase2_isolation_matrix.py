@@ -21,6 +21,10 @@ from httpx import ASGITransport, AsyncClient
 from polsia.adapters.cost import NullCostCalculator
 from polsia.adapters.events import InProcessEventBus
 from polsia.adapters.persistence.memory_repositories import SqlAlchemyMemoryStore
+from polsia.adapters.persistence.permission_repositories import (
+    SqlAlchemyApprovalRepository,
+    SqlAlchemyPermissionRepository,
+)
 from polsia.adapters.persistence.registry_repositories import SqlAlchemyAgentRepository
 from polsia.adapters.persistence.repositories import (
     SqlAlchemyCompanyRepository,
@@ -42,8 +46,9 @@ from polsia.core.shared.ids import CompanyId, TaskExecutionId, TaskId
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.memory import MemoryService
-from polsia.services.permissions import PermissionService
+from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.registries import AgentService
 from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.usage import UsageService
@@ -211,7 +216,30 @@ class TestPhase2IsolationMatrix:
             deps = SqlAlchemyTaskDependencyRepository(session)
             executions = SqlAlchemyTaskExecutionRepository(session)
             task_service = TaskService(tasks, deps, companies, memberships, bus)
-            exec_service = ExecutionService(tasks, executions, deps, companies, memberships, bus)
+            exec_service = ExecutionService(
+                tasks,
+                executions,
+                deps,
+                companies,
+                memberships,
+                bus,
+                authorization=ExecutionAuthorizationService(
+                    tasks=task_service,
+                    agents=SqlAlchemyAgentRepository(session),
+                    companies=companies,
+                    memberships=memberships,
+                    permissions=PermissionService(
+                        SqlAlchemyPermissionRepository(session),
+                        SqlAlchemyApprovalRepository(session),
+                        companies,
+                        memberships,
+                        bus,
+                    ),
+                    approvals=ApprovalService(
+                        SqlAlchemyApprovalRepository(session), companies, memberships, bus
+                    ),
+                ),
+            )
             task = await task_service.create_task(user, org1.id, company1.id, title="private")
             # the same task id under company2 is NOT FOUND (scoped)
             from polsia.core.shared.errors import NotFoundError

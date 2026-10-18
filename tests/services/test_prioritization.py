@@ -76,6 +76,7 @@ def make_obs(
         active_goals=goals or [],
         goals_total=len(goals or []),
         kpis=kpis or [],
+        kpis_total=len(kpis or []),
         kpis_attention=[],
         tasks_total=len(tasks),
         ready_tasks=ready or [],

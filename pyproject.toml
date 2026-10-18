@@ -47,6 +47,8 @@ source = ["polsia"]
 line-length = 100
 target-version = "py312"
 src = ["polsia", "tests"]
+# Migration scripts are mechanical/generated and already excluded from mypy.
+extend-exclude = ["alembic"]
 
 [tool.ruff.lint]
 select = [

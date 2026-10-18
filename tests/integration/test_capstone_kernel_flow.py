@@ -40,6 +40,7 @@ from polsia.core.shared.ids import GoalId, TaskId
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.orchestration import OrchestrationService
 from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService, KpiService
@@ -142,17 +143,42 @@ async def _register_and_setup(
     approval_service = ApprovalService(
         SqlAlchemyApprovalRepository(session), companies, memberships, bus
     )
+    task_service = TaskService(tasks, deps, companies, memberships, bus)
+    authorization = ExecutionAuthorizationService(
+        tasks=task_service,
+        agents=agents,
+        companies=companies,
+        memberships=memberships,
+        permissions=permission_service,
+        approvals=approval_service,
+    )
     graph = {
         "goals": GoalService(goals, companies, memberships, bus),
         "kpis": KpiService(kpis, goals, companies, memberships, bus),
-        "tasks": TaskService(tasks, deps, companies, memberships, bus),
-        "executions": ExecutionService(tasks, executions, deps, companies, memberships, bus),
+        "tasks": task_service,
+        "executions": ExecutionService(
+            tasks,
+            executions,
+            deps,
+            companies,
+            memberships,
+            bus,
+            authorization=authorization,
+        ),
         "agents": AgentService(agents, companies, memberships, bus),
         "permissions": permission_service,
         "approvals": approval_service,
         "orchestration": OrchestrationService(
-            tasks=TaskService(tasks, deps, companies, memberships, bus),
-            executions=ExecutionService(tasks, executions, deps, companies, memberships, bus),
+            tasks=task_service,
+            executions=ExecutionService(
+                tasks,
+                executions,
+                deps,
+                companies,
+                memberships,
+                bus,
+                authorization=authorization,
+            ),
             orchestrator=DeterministicOrchestrator(),
             runtime=MockRuntime(),
             agents=agents,
@@ -242,14 +268,15 @@ class TestCapstoneKernelFlow:
         assert tasks[0].status.value == "ready"  # no dependencies
         assert tasks[1].status.value == "pending"  # blocked by dependency
 
+        # 5b. SECURITY: grant execution permission (deny-by-default gate) so the
+        # dependency gate below is what rejects the attempt, not the permission gate
+        await grant_execute_permission(graph, user, org_id, company_id)
+
         # 5. DEPENDENCY GATE: dependent task cannot start yet
         from polsia.core.shared.errors import ValidationError
 
         with pytest.raises(ValidationError):
             await graph["executions"].start_execution(user, org_id, company_id, tasks[1].id)
-
-        # 5b. SECURITY: grant execution permission (deny-by-default gate)
-        await grant_execute_permission(graph, user, org_id, company_id)
 
         # 6. EXECUTE task 1 through MockRuntime (agent selection automatic)
         task1, execution1, result1 = await graph["orchestration"].execute_task(

@@ -89,10 +89,12 @@ class Decision:
         cycle_id: str | None = None,
         now: dt.datetime | None = None,
     ) -> Decision:
+        if payload is not None and not isinstance(payload, dict):
+            raise ValidationError("decision payload must be a JSON object")
         decision = Decision(
             company_id=company_id,
             decision_type=decision_type,
-            payload=dict(payload or {}),
+            payload={} if payload is None else dict(payload),
             rationale=rationale,
             confidence=validate_confidence(confidence),
             model_reference=model_reference,
@@ -114,8 +116,12 @@ class Decision:
         payload keys, invalid confidence, empty rationale for ESCALATE, or a
         task_id payload that is not parseable / not for this company.
         """
+        if not isinstance(self.company_id, CompanyId):
+            raise ValidationError("decision company_id must be a CompanyId")
         if not isinstance(self.decision_type, DecisionType):
             raise ValidationError(f"invalid decision type: {self.decision_type!r}")
+        if not isinstance(self.payload, dict):
+            raise ValidationError("decision payload must be a JSON object")
 
         required = _REQUIRED_PAYLOAD[self.decision_type]
         for key in required:

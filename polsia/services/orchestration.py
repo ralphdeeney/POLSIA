@@ -14,20 +14,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from polsia.core.ceo.triggers import SafetyGuard, TriggerDispatchContext
 from polsia.core.cost.ports import UsageRecord
-from polsia.core.permissions.errors import PermissionDenied
-from polsia.core.permissions.values import PermissionDecision
 from polsia.core.planning.ports import KpiRepository
 from polsia.core.registry.entities import Agent
 from polsia.core.registry.ports import AgentRepository
 from polsia.core.runtime.ports import RuntimePort, RuntimeRequest, RuntimeResult
 from polsia.core.scheduling import OrchestratorPort
-from polsia.core.shared.errors import NotFoundError, ValidationError
+from polsia.core.shared.errors import ValidationError
 from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit
 from polsia.core.shared.ids import AgentId, CompanyId, GoalId, OrganizationId
 from polsia.core.tasks.entities import Task, TaskExecution
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import _CompanyScope
 from polsia.services.tasks import ExecutionService, TaskService
@@ -61,18 +61,20 @@ class OrchestrationService:
         usage_service: UsageService | None = None,
         approvals: ApprovalService | None = None,
         verifier: ResultVerifier | None = None,
+        safety_guard: SafetyGuard | None = None,
+        execution_authorization: ExecutionAuthorizationService | None = None,
     ) -> None:
         # SECURITY (Phase 3, mandate §10): the permission engine is a REQUIRED
         # collaborator. execute_task consults it BEFORE any execution starts;
         # without it this service cannot be constructed — the gate cannot be
         # accidentally omitted from the execution path.
-        self._permissions = permissions
         self._tasks = tasks
         self._executions = executions
         self._orchestrator = orchestrator
         self._runtime = runtime
         self._agents = agents
         self._kpis = kpis
+        self._companies = companies
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
         self._store = store
@@ -81,8 +83,16 @@ class OrchestrationService:
         # Optional approval service: when wired, an approval-required policy
         # opens a pending Approval (task left in its current status — the
         # state machine forbids ready→blocked); unwired, it raises like deny.
-        self._approvals = approvals
         self._verifier = verifier or ResultVerifier()
+        self._safety_guard = safety_guard or SafetyGuard()
+        self._execution_authorization = execution_authorization or ExecutionAuthorizationService(
+            tasks=tasks,
+            agents=agents,
+            companies=companies,
+            memberships=memberships,
+            permissions=permissions,
+            approvals=approvals,
+        )
 
     async def plan_goal(
         self,
@@ -155,36 +165,9 @@ class OrchestrationService:
     ) -> Agent:
         """Pick the agent for a task: an explicit id, the task's assignment,
         or the first selectable (active) agent in the company."""
-        await self._scope.require_company(actor, organization_id, company_id)
-        candidate_id = agent_id or task.assigned_agent_id
-        if candidate_id is not None:
-            agent = await self._agents.get(company_id, candidate_id)
-            if agent is None:
-                raise NotFoundError(f"agent {candidate_id} not found")
-            if not agent.is_selectable():
-                raise ValidationError(f"agent {candidate_id} is not selectable (disabled)")
-            if task.assigned_skill and task.assigned_skill not in agent.capabilities:
-                raise ValidationError(
-                    f"agent {candidate_id} does not declare required capability "
-                    f"{task.assigned_skill!r}"
-                )
-            return agent
-        candidates = [
-            agent
-            for agent in await self._agents.list_for_company(company_id)
-            if agent.is_selectable()
-        ]
-        if task.assigned_skill:
-            candidates = [
-                agent for agent in candidates if task.assigned_skill in agent.capabilities
-            ]
-        if candidates:
-            return min(candidates, key=lambda candidate: str(candidate.id))
-        if task.assigned_skill:
-            raise ValidationError(
-                f"no selectable agent declares required capability {task.assigned_skill!r}"
-            )
-        raise ValidationError("no selectable agent is registered for this company")
+        return await self._execution_authorization.select_agent(
+            actor, organization_id, company_id, task, agent_id=agent_id
+        )
 
     async def authorize_execution(
         self,
@@ -194,11 +177,9 @@ class OrchestrationService:
         task_id: Any,
     ) -> Agent:
         """Authorize one task attempt without creating an execution or calling runtime."""
-        await self._scope.require_company(actor, organization_id, company_id)
-        task = await self._tasks.get_task(actor, organization_id, company_id, task_id)
-        agent = await self.select_agent(actor, organization_id, company_id, task)
-        await self._enforce_execution_allowed(actor, organization_id, company_id, task, agent)
-        return agent
+        return await self._execution_authorization.authorize(
+            actor, organization_id, company_id, task_id
+        )
 
     async def execute_task(
         self,
@@ -210,6 +191,8 @@ class OrchestrationService:
         tool_permissions: dict[str, str] | None = None,
         context: dict[str, Any] | None = None,
         agent_id: AgentId | None = None,
+        safety_context: TriggerDispatchContext | None = None,
+        retry_failed: bool = False,
     ) -> tuple[Task, TaskExecution, RuntimeResult]:
         """Run one attempt of a task through the runtime and record it.
 
@@ -228,8 +211,10 @@ class OrchestrationService:
         task = await self._tasks.get_task(actor, organization_id, company_id, task_id)
         agent = await self.select_agent(actor, organization_id, company_id, task, agent_id=agent_id)
 
-        # -- SECURITY GATE (deny-by-default, centralized) --------------------
-        await self._enforce_execution_allowed(actor, organization_id, company_id, task, agent)
+        company = await self._companies.get(organization_id, company_id)
+        if company is None:
+            raise ValidationError("company disappeared before execution dispatch")
+        self._safety_guard.check_dispatch(company=company, task=task, context=safety_context)
 
         task, execution = await self._executions.start_execution(
             actor,
@@ -240,6 +225,7 @@ class OrchestrationService:
             skill_id=task.assigned_skill,
             runtime=self._runtime.name,
             model=agent.model_reference,
+            retry_failed=retry_failed,
         )
 
         request = RuntimeRequest(
@@ -296,70 +282,6 @@ class OrchestrationService:
             },
         )
         return task, execution, result
-
-    async def _enforce_execution_allowed(
-        self,
-        actor: User,
-        organization_id: OrganizationId,
-        company_id: CompanyId,
-        task: Task,
-        agent: Agent,
-    ) -> None:
-        """Centralized execution gate — the ONLY path to RuntimePort.
-
-        Policy (deny-by-default): the agent principal needs an explicit ALLOW
-        on (resource_type="task", resource_id=None, action="execute") in the
-        company.
-
-        - ALLOW -> return; execution proceeds.
-        - APPROVAL_REQUIRED -> open a pending Approval via the (optional)
-          ApprovalService, then raise ``ApprovalRequired`` carrying its id.
-          The task's status is untouched (the state machine forbids
-          ready→blocked); the pending approval is the gate that must be
-          granted before a later attempt may run.
-        - DENY or NO RULE (default deny) -> raise ``PermissionDenied``.
-
-        The permission engine is authoritative: nothing from the runtime or
-        model reaches this method. No execution record is created on either
-        failure path.
-        """
-        decision = await self._permissions.check(
-            principal_type="agent",
-            principal_id=str(agent.id),
-            company_id=company_id,
-            resource_type="task",
-            resource_id=None,
-            action="execute",
-        )
-        if decision is PermissionDecision.ALLOW:
-            return
-        if decision is PermissionDecision.DENY:
-            raise PermissionDenied(
-                f"agent {agent.id} is not allowed to execute tasks in company "
-                f"{company_id} (policy decision: deny)"
-            )
-        # APPROVAL_REQUIRED
-        if self._approvals is None:
-            raise PermissionDenied(
-                f"agent {agent.id} requires approval to execute tasks in "
-                f"company {company_id}, but no approval service is configured"
-            )
-        approval = await self._approvals.request_approval(
-            actor,
-            organization_id,
-            company_id,
-            requested_by=actor.id,
-            action="execute",
-            resource_type="task",
-            resource_id=str(task.id),
-            reason=f"agent {agent.id} execution of task {task.id} requires approval",
-        )
-        from polsia.core.permissions.errors import ApprovalRequired
-
-        raise ApprovalRequired(
-            f"agent {agent.id} execution of task {task.id} requires approval",
-            approval_id=str(approval.id),
-        )
 
     async def _record_usage(
         self,

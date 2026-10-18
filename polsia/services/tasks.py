@@ -10,9 +10,10 @@ Key rules:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 from collections import deque
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from polsia.core.planning.values import Priority
 from polsia.core.shared.errors import (
@@ -39,6 +40,9 @@ from polsia.core.tasks.values import TaskStatus
 from polsia.core.tenancy.entities import User
 from polsia.core.tenancy.ports import CompanyRepository, MembershipRepository
 from polsia.services.planning import _CompanyScope
+
+if TYPE_CHECKING:
+    from polsia.services.execution_authorization import ExecutionAuthorizationService
 
 TaskStatusEvent = {
     TaskStatus.READY: "task.ready",
@@ -170,12 +174,16 @@ class TaskService:
         *,
         new_status: TaskStatus,
     ) -> Task:
-        """Transition the task status through the explicit state machine.
+        """Transition non-execution task states through the explicit state machine.
 
-        ``pending -> ready`` additionally requires every dependency to be
-        COMPLETED (the enforcement point for spec §5 dependency gating).
+        Running/retrying are execution lifecycle states and can only be entered
+        through the authorization-gated ExecutionService.
         """
         await self._scope.require_company(actor, organization_id, company_id)
+        if new_status in {TaskStatus.RUNNING, TaskStatus.RETRYING}:
+            raise ValidationError(
+                f"task status {new_status.value!r} requires the execution service"
+            )
         task = await self._load(company_id, task_id)
         if task.status is TaskStatus.PENDING and new_status is TaskStatus.READY:
             return await self._refresh_readiness(actor, organization_id, company_id, task)
@@ -371,6 +379,8 @@ class ExecutionService:
         memberships: MembershipRepository,
         bus: EventBus,
         store: EventStore | None = None,
+        *,
+        authorization: ExecutionAuthorizationService,
     ) -> None:
         self._tasks = tasks
         self._executions = executions
@@ -378,6 +388,7 @@ class ExecutionService:
         self._scope = _CompanyScope(companies, memberships)
         self._bus = bus
         self._store = store
+        self._authorization = authorization
 
     async def start_execution(
         self,
@@ -391,36 +402,64 @@ class ExecutionService:
         runtime: str | None = None,
         model: str | None = None,
         input: dict[str, Any] | None = None,
+        retry_failed: bool = False,
     ) -> tuple[Task, TaskExecution]:
         """Move a ready/retrying task to running and append a new execution.
+
+        The shared execution-authorization boundary runs first: only an
+        explicit permission ``ALLOW`` proceeds; deny raises
+        ``PermissionDenied`` and approval-required persists a pending approval
+        then raises ``ApprovalRequired`` — in both cases no attempt exists.
 
         Raises ValidationError for any other source status (dependency gating
         upstream keeps unsatisfied tasks pending).
         """
-        await self._scope.require_company(actor, organization_id, company_id)
-        task = await self._load(company_id, task_id)
-        task = task.transition_status(TaskStatus.RUNNING)
-        await self._tasks.update(task)
+        checked, agent = await self._authorization.authorize_task(
+            actor, organization_id, company_id, task_id, agent_id=agent_id
+        )
+        if checked.attempts >= checked.max_attempts:
+            raise ValidationError(
+                f"task {task_id} exhausted attempts ({checked.attempts}/{checked.max_attempts})"
+            )
+        if retry_failed:
+            if not checked.can_retry():
+                raise ValidationError("retry execution requires a retryable failed task")
+            startable = checked.transition_status(TaskStatus.RETRYING)
+        else:
+            startable = checked
+        if startable.status not in {TaskStatus.READY, TaskStatus.RETRYING}:
+            raise ValidationError(
+                f"task {task_id} is not startable from status {startable.status.value!r}"
+            )
+        for dependency_id in await self._dependencies.dependencies_of(company_id, task_id):
+            dependency = await self._tasks.get(company_id, dependency_id)
+            if dependency is None or dependency.status is not TaskStatus.COMPLETED:
+                raise ValidationError(f"task {task_id} has an incomplete dependency")
+        running = dataclasses.replace(startable, assigned_agent_id=agent.id).transition_status(
+            TaskStatus.RUNNING
+        )
+        if not await self._tasks.start_attempt(checked, running):
+            raise ValidationError("task changed after authorization; attempt was not created")
         execution = TaskExecution.start(
             company_id=company_id,
             task_id=task_id,
-            attempt_number=task.attempts,
-            agent_id=agent_id if agent_id is not None else task.assigned_agent_id,
-            skill_id=skill_id if skill_id is not None else task.assigned_skill,
+            attempt_number=running.attempts,
+            agent_id=agent.id,
+            skill_id=skill_id if skill_id is not None else running.assigned_skill,
             runtime=runtime,
             model=model,
-            input=input if input is not None else dict(task.input),
+            input=input if input is not None else dict(running.input),
         )
         await self._executions.add(execution)
         await self._publish(
             "execution.started",
             organization_id,
             company_id,
-            task.id,
+            running.id,
             execution.id,
             {"attempt": execution.attempt_number},
         )
-        return task, execution
+        return running, execution
 
     async def complete_execution(
         self,

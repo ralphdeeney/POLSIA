@@ -43,6 +43,7 @@ from polsia.core.shared.ids import ApprovalId
 from polsia.core.tenancy.entities import Company, Organization, OrgMembership, User
 from polsia.core.tenancy.values import MembershipRole
 from polsia.infra.db import create_all_metadata
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.orchestration import OrchestrationService
 from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.registries import AgentService
@@ -112,9 +113,25 @@ async def env():
             # A runtime that would "succeed" if it were ever reached.
             runtime = MockRuntime()
 
+            execution_service = ExecutionService(
+                tasks,
+                executions,
+                deps,
+                companies,
+                memberships,
+                bus,
+                authorization=ExecutionAuthorizationService(
+                    tasks=task_service,
+                    agents=agents_repo,
+                    companies=companies,
+                    memberships=memberships,
+                    permissions=permissions,
+                    approvals=approvals,
+                ),
+            )
             orchestration = OrchestrationService(
                 tasks=task_service,
-                executions=ExecutionService(tasks, executions, deps, companies, memberships, bus),
+                executions=execution_service,
                 orchestrator=__import__(
                     "polsia.adapters.runtime", fromlist=["DeterministicOrchestrator"]
                 ).DeterministicOrchestrator(),
@@ -140,6 +157,7 @@ async def env():
                 "permissions": permissions,
                 "approvals": approvals,
                 "task_service": task_service,
+                "execution_service": execution_service,
                 "orchestration": orchestration,
                 "executions_for": executions_for,
                 "session": session,
@@ -154,6 +172,57 @@ def _allow(env: dict[str, Any], decision: PermissionDecision) -> None:
 
 
 class TestExecutionGate:
+    async def test_direct_attempt_service_denies_without_policy(self, env: dict[str, Any]) -> None:
+        """ExecutionService itself cannot bypass the shared authorization boundary."""
+        with pytest.raises(PermissionDenied):
+            await env["execution_service"].start_execution(
+                env["user"], env["org"].id, env["company"].id, env["task"].id
+            )
+        assert await env["executions_for"](env["task"].id) == []
+
+    async def test_direct_attempt_service_persists_approval_without_attempt(
+        self, env: dict[str, Any]
+    ) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.APPROVAL_REQUIRED,
+        )
+        with pytest.raises(ApprovalRequired):
+            await env["execution_service"].start_execution(user, org.id, company.id, env["task"].id)
+        pending = await env["approvals"].list_approvals(user, org.id, company.id, pending_only=True)
+        assert len(pending) == 1
+        assert await env["executions_for"](env["task"].id) == []
+
+    async def test_direct_attempt_service_allows_authorized_attempt(
+        self, env: dict[str, Any]
+    ) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task, execution = await env["execution_service"].start_execution(
+            user, org.id, company.id, env["task"].id
+        )
+        assert task.status.value == "running"
+        assert execution.agent_id == env["agent"].id
+        assert await env["executions_for"](env["task"].id) == [execution]
+
     async def test_no_policy_denies_by_default(self, env: dict[str, Any]) -> None:
         """No rule at all -> PermissionDenied, and NO execution record exists."""
         with pytest.raises(PermissionDenied):
@@ -177,6 +246,75 @@ class TestExecutionGate:
         )
         with pytest.raises(PermissionDenied):
             await env["orchestration"].execute_task(user, org.id, company.id, env["task"].id)
+        assert await env["executions_for"](env["task"].id) == []
+
+    async def test_task_specific_deny_overrides_company_allow(self, env: dict[str, Any]) -> None:
+        """The gate evaluates the actual task ID, so a specific deny wins over
+        the company-wide allow fallback."""
+        user, org, company = env["user"], env["org"], env["company"]
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=str(env["task"].id),
+            action="execute",
+            decision=PermissionDecision.DENY,
+        )
+        with pytest.raises(PermissionDenied):
+            await env["execution_service"].start_execution(user, org.id, company.id, env["task"].id)
+        current = await env["task_service"].get_task(user, org.id, company.id, env["task"].id)
+        assert current.status.value == "ready"
+        assert current.attempts == 0
+        assert await env["executions_for"](env["task"].id) == []
+
+    async def test_task_specific_approval_overrides_company_allow(
+        self, env: dict[str, Any]
+    ) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=str(env["task"].id),
+            action="execute",
+            decision=PermissionDecision.APPROVAL_REQUIRED,
+        )
+        with pytest.raises(ApprovalRequired):
+            await env["execution_service"].start_execution(user, org.id, company.id, env["task"].id)
+        pending = await env["approvals"].list_approvals(user, org.id, company.id, pending_only=True)
+        assert len(pending) == 1
+        assert pending[0].resource_id == str(env["task"].id)
+        current = await env["task_service"].get_task(user, org.id, company.id, env["task"].id)
+        assert current.status.value == "ready"
+        assert current.attempts == 0
         assert await env["executions_for"](env["task"].id) == []
 
     async def test_allow_allows_execution(self, env: dict[str, Any]) -> None:
@@ -229,6 +367,41 @@ class TestExecutionGate:
         assert await env["executions_for"](env["task"].id) == []
         refreshed = await env["task_service"].get_task(user, org.id, company.id, env["task"].id)
         assert refreshed.status.value in {"pending", "ready"}
+
+    async def test_declared_task_approval_is_required_even_with_policy_allow(
+        self, env: dict[str, Any]
+    ) -> None:
+        user, org, company = env["user"], env["org"], env["company"]
+        task = await env["task_service"].create_task(
+            user,
+            org.id,
+            company.id,
+            title="human-gated plan task",
+            metadata={"requires_approval": True},
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(env["agent"].id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        with pytest.raises(ApprovalRequired):
+            await env["execution_service"].start_execution(user, org.id, company.id, task.id)
+        pending = await env["approvals"].list_approvals(user, org.id, company.id, pending_only=True)
+        assert len(pending) == 1
+        await env["approvals"].decide_approval(
+            user, org.id, company.id, pending[0].id, decision="approved"
+        )
+        running, execution = await env["execution_service"].start_execution(
+            user, org.id, company.id, task.id
+        )
+        assert running.status.value == "running"
+        assert execution.agent_id == env["agent"].id
 
     async def test_approval_alone_is_not_enough_without_policy_upgrade(
         self, env: dict[str, Any]

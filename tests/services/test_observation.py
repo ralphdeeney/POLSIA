@@ -236,6 +236,70 @@ class TestObservation:
         obs_other = await env["observer"].observe(org.id, env["company2"].id, now=now)
         assert obs_other.digest != obs1.digest
 
+    async def test_kpi_attention_uses_bounded_kpi_limit(self, env: dict[str, Any]) -> None:
+        org, company = env["org"], env["company1"]
+        from polsia.core.planning.entities import Kpi as KpiEntity
+
+        for index in range(4):
+            kpi = KpiEntity.create(
+                company_id=company.id,
+                name=f"attention-{index}",
+                direction=KpiDirection.INCREASE,
+                target_value=100,
+            ).record_measurement(10)
+            await env["kpis"].add(kpi)
+        observer = CompanyStateObserver(
+            env["goals"],
+            env["kpis"],
+            env["task_service"]._tasks,
+            env["task_service"]._dependencies,
+            env["agent_service"]._agents,
+            SqlAlchemyApprovalRepository(env["session"]),
+            limits=ObservationLimits(kpis=2),
+        )
+        observation = await observer.observe(org.id, company.id)
+        assert len(observation.kpis) == 2
+        assert len(observation.kpis_attention) == 2
+        assert observation.kpis_total == 4
+
+    async def test_kpis_total_distinguishes_total_from_returned(self, env: dict[str, Any]) -> None:
+        """kpis_total is the uncapped count; only the returned list is bounded."""
+        org, company = env["org"], env["company1"]
+        from polsia.core.planning.entities import Kpi as KpiEntity
+
+        for index in range(5):
+            kpi = KpiEntity.create(
+                company_id=company.id,
+                name=f"total-{index}",
+                direction=KpiDirection.INCREASE,
+                target_value=100,
+            ).record_measurement(10)
+            await env["kpis"].add(kpi)
+
+        def observer_with(cap: int) -> CompanyStateObserver:
+            return CompanyStateObserver(
+                env["goals"],
+                env["kpis"],
+                env["task_service"]._tasks,
+                env["task_service"]._dependencies,
+                env["agent_service"]._agents,
+                SqlAlchemyApprovalRepository(env["session"]),
+                limits=ObservationLimits(kpis=cap),
+            )
+
+        # fewer KPIs than the cap: returned list equals the total
+        under = await observer_with(cap=10).observe(org.id, company.id)
+        assert under.kpis_total == 5
+        assert len(under.kpis) == 5
+        # exactly the cap: returned list equals the total
+        exact = await observer_with(cap=5).observe(org.id, company.id)
+        assert exact.kpis_total == 5
+        assert len(exact.kpis) == 5
+        # more KPIs than the cap: returned list is bounded, total is not
+        over = await observer_with(cap=2).observe(org.id, company.id)
+        assert over.kpis_total == 5
+        assert len(over.kpis) == 2
+
     async def test_limits_cap_sections_but_totals_remain(self, env: dict[str, Any]) -> None:
         user, org, company = env["user"], env["org"], env["company1"]
         # Build a chain: task i depends on task i-1, so tasks 1..6 start PENDING
@@ -301,3 +365,64 @@ class TestObservation:
         assert payload["company_id"] == str(company.id)
         assert payload["tasks"]["failed"][0]["task_id"] == str(obs.failed_tasks[0].task.id)
         assert "digest" in payload
+
+
+class _SpyTaskRepository:
+    """Delegating spy that records how the observer queries the task table."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.calls: list[tuple[str, Any, Any]] = []
+
+    async def list_for_company(
+        self,
+        company_id: CompanyId,
+        *,
+        status: Any = None,
+        limit: int | None = None,
+    ) -> list[Any]:
+        self.calls.append(("list", status, limit))
+        return await self._inner.list_for_company(company_id, status=status, limit=limit)
+
+    async def count_for_company(self, company_id: CompanyId) -> int:
+        self.calls.append(("count", None, None))
+        return await self._inner.count_for_company(company_id)
+
+    async def get(self, company_id: CompanyId, task_id: Any) -> Any:
+        return await self._inner.get(company_id, task_id)
+
+
+async def test_task_reads_are_bounded_in_the_query(env: dict[str, Any]) -> None:
+    """Observation pushes status filters, limits and counts into the query."""
+    from polsia.core.tasks.values import TaskStatus
+
+    user, org, company = env["user"], env["org"], env["company1"]
+    for index in range(6):
+        await env["task_service"].create_task(user, org.id, company.id, title=f"b-{index}")
+
+    spy = _SpyTaskRepository(env["task_service"]._tasks)
+    observer = CompanyStateObserver(
+        goals=env["goals"],
+        kpis=env["kpis"],
+        tasks=spy,
+        dependencies=env["task_service"]._dependencies,
+        agents=env["agent_service"]._agents,
+        approvals=SqlAlchemyApprovalRepository(env["session"]),
+        limits=ObservationLimits(ready_tasks=2),
+    )
+    obs = await observer.observe(org.id, company.id)
+
+    # Every task list query is bounded and status-filtered; the total is a query.
+    list_calls = [call for call in spy.calls if call[0] == "list"]
+    assert list_calls
+    assert all(call[2] is not None for call in list_calls)
+    assert {call[1] for call in list_calls} == {
+        TaskStatus.READY,
+        TaskStatus.PENDING,
+        TaskStatus.RUNNING,
+        TaskStatus.FAILED,
+    }
+    assert any(call[0] == "count" for call in spy.calls)
+    # Boundary: 6 ready tasks with a cap of 2 -> 2 returned, total still 6.
+    assert obs.tasks_total == 6
+    assert len(obs.ready_tasks) == 2

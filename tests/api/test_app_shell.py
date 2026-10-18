@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from polsia.adapters.events import InProcessEventBus
 from polsia.api.main import create_app
 from polsia.core.shared.errors import OrganizationNotFoundError, ValidationError
 from polsia.core.shared.ids import OrganizationId
+from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
+from polsia.services.event_triggers import EventTriggerDispatcher
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 
 def _make_app() -> object:
@@ -31,6 +36,43 @@ async def client():
     transport = ASGITransport(app=app)  # type: ignore[arg-type]
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+async def test_injected_trigger_dispatcher_is_subscribed_and_drained() -> None:
+    engine = create_async_engine(
+        "sqlite+aiosqlite://",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    await create_all_metadata(engine)
+    bus = InProcessEventBus()
+    events: list[str] = []
+
+    async def run_cycle(*_args: object) -> dict[str, object]:
+        return {}
+
+    dispatcher = EventTriggerDispatcher(
+        session_factory=async_sessionmaker(engine, expire_on_commit=False),
+        run_cycle=run_cycle,  # type: ignore[arg-type]
+    )
+    dispatcher.catch_up = lambda: _capture_catchup(events)  # type: ignore[method-assign]
+    app = create_app(
+        Settings(env="test"),
+        session_factory=async_sessionmaker(engine, expire_on_commit=False),
+        services={"bus": bus, "event_trigger_dispatcher": dispatcher},
+    )
+    async with app.router.lifespan_context(app):
+        assert bus.subscriber_count("task.ready") == 1
+        assert bus.subscriber_count("task.failed") == 1
+        assert events == ["catchup"]
+        assert dispatcher._accepting
+    assert not dispatcher._accepting
+    await engine.dispose()
+
+
+async def _capture_catchup(events: list[str]) -> int:
+    events.append("catchup")
+    return 0
 
 
 class TestHealthEndpoints:

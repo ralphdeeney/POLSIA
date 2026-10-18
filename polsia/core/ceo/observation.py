@@ -72,6 +72,8 @@ class CompanyObservation:
     active_goals: list[Goal]
     goals_total: int
     kpis: list[Kpi]
+    # total KPIs observed (uncapped); `kpis` itself is bounded by limits
+    kpis_total: int
     kpis_attention: list[KpiAttention]
     # tasks
     tasks_total: int
@@ -98,7 +100,7 @@ class CompanyObservation:
                 "active": [str(g.id) for g in self.active_goals],
             },
             "kpis": {
-                "total": len(self.kpis),
+                "total": self.kpis_total,
                 "attention": [
                     {"kpi_id": str(a.kpi.id), "status": a.kpi.status.value, "reason": a.reason}
                     for a in self.kpis_attention

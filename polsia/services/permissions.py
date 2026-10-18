@@ -21,7 +21,7 @@ from typing import Any, Literal
 from polsia.core.permissions.entities import Approval, Permission
 from polsia.core.permissions.errors import ApprovalRequired, PermissionDenied
 from polsia.core.permissions.ports import ApprovalRepository, PermissionRepository
-from polsia.core.permissions.values import PermissionDecision
+from polsia.core.permissions.values import ApprovalStatus, PermissionDecision
 from polsia.core.shared.errors import NotFoundError, ValidationError
 from polsia.core.shared.events import EventBus, EventEnvelope, EventStore, emit, utcnow
 from polsia.core.shared.ids import ApprovalId, CompanyId, OrganizationId, UserId
@@ -350,6 +350,28 @@ class ApprovalService:
         if pending_only:
             return await self._approvals.list_pending(company_id)
         return await self._approvals.list_for_company(company_id)
+
+    async def has_approved(
+        self,
+        actor: User,
+        organization_id: OrganizationId,
+        company_id: CompanyId,
+        *,
+        action: str,
+        resource_type: str,
+        resource_id: str | None,
+    ) -> bool:
+        """Return whether a matching, non-expired human approval exists."""
+        await self._scope.require_company(actor, organization_id, company_id)
+        now = self._clock()
+        return any(
+            approval.status is ApprovalStatus.APPROVED
+            and not approval.is_expired(now)
+            and approval.action == action
+            and approval.resource_type == resource_type
+            and approval.resource_id == resource_id
+            for approval in await self._approvals.list_for_company(company_id)
+        )
 
     async def _publish(
         self,

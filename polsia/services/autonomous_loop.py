@@ -9,8 +9,15 @@ from typing import Any
 from polsia.core.ceo.decisions import Decision, DecisionType
 from polsia.core.ceo.observation import CompanyObservation, FailedTask
 from polsia.core.ceo.records import DecisionRecord, DecisionRecordRepository
+from polsia.core.ceo.triggers import (
+    TRIGGER_EVENT_TYPES,
+    EventTriggerPolicy,
+    SafetyGuard,
+    TriggerDispatchContext,
+)
 from polsia.core.permissions.errors import ApprovalRequired, PermissionDenied
 from polsia.core.shared.errors import CompanyNotFoundError, NotAMember, ValidationError
+from polsia.core.shared.events import EventEnvelope
 from polsia.core.shared.ids import CompanyId, OrganizationId, TaskId
 from polsia.core.tasks.entities import Task
 from polsia.core.tasks.values import TaskStatus
@@ -57,6 +64,7 @@ class AutonomousLoop:
         memberships: MembershipRepository,
         recovery: RecoveryEngine | None = None,
         max_actions: int = 3,
+        safety_guard: SafetyGuard | None = None,
     ) -> None:
         if max_actions < 1 or max_actions > 100:
             raise ValueError("max_actions must be between 1 and 100")
@@ -71,6 +79,7 @@ class AutonomousLoop:
         self._memberships = memberships
         self._recovery = recovery or RecoveryEngine()
         self._max_actions = max_actions
+        self._safety_guard = safety_guard or SafetyGuard()
 
     async def run(
         self,
@@ -106,7 +115,7 @@ class AutonomousLoop:
         while actions < budget and iterations < iteration_budget:
             iterations += 1
             observation = await self._observe(organization_id, company_id)
-            candidate = self._select(observation)
+            candidate = self.select_candidate(observation)
             if candidate is None:
                 if observation.pending_approvals:
                     stop_reason = "wait_for_approval"
@@ -166,40 +175,18 @@ class AutonomousLoop:
                 await self._records.add(record)
                 records.append(record)
                 continue
-            try:
-                agent = await self._orchestration.authorize_execution(
-                    actor, organization_id, company_id, current.id
-                )
-            except ApprovalRequired as exc:
-                record = dataclasses.replace(
-                    record,
-                    outcome_context={"status": "approval_required", "approval_id": exc.approval_id},
-                )
-                await self._records.add(record)
-                records.append(record)
-                stop_reason = "approval_required"
-                break
-            except PermissionDenied:
-                record = dataclasses.replace(
-                    record, outcome_context={"status": "permission_denied"}
-                )
-                await self._records.add(record)
-                records.append(record)
-                stop_reason = "permission_denied"
-                break
-            if candidate.decision_type is DecisionType.RETRY_TASK:
-                await self._executions.retry_task(actor, organization_id, company_id, current.id)
-                current = await self._tasks.get_task(actor, organization_id, company_id, task.id)
-            await self._delegation.delegate(
-                actor, organization_id, company_id, current.id, agent_id=agent.id
-            )
-
+            if decision.decision_type not in {
+                DecisionType.PRIORITIZE_TASK,
+                DecisionType.RETRY_TASK,
+            }:
+                raise ValidationError("autonomous loop selected a non-dispatch decision")
             try:
                 task_after, execution, result = await self._orchestration.execute_task(
                     actor,
                     organization_id,
                     company_id,
                     current.id,
+                    retry_failed=(candidate.decision_type is DecisionType.RETRY_TASK),
                 )
             except ApprovalRequired as exc:
                 record = dataclasses.replace(
@@ -244,24 +231,122 @@ class AutonomousLoop:
             raise ValidationError("observer returned a mismatched tenant scope")
         return observation
 
-    def _select(self, observation: CompanyObservation) -> _Candidate | None:
+    def select_candidate(
+        self, observation: CompanyObservation, *, recovery: RecoveryEngine | None = None
+    ) -> _Candidate | None:
         report = self._prioritizer.prioritize(observation)
         by_id: dict[TaskId, Task] = {task.id: task for task in observation.ready_tasks}
         retryable: dict[TaskId, FailedTask] = {
             item.task.id: item for item in observation.failed_tasks if item.can_retry
         }
+        engine = recovery or self._recovery
         for ranked in report.items:
             task = ranked.task
             if task.id in by_id and by_id[task.id].status is TaskStatus.READY:
                 return _Candidate(task, DecisionType.PRIORITIZE_TASK, ranked.rationale)
             failed = retryable.get(task.id)
             if failed is not None and task.status is TaskStatus.FAILED:
-                recovery = self._recovery.decide(
-                    attempts=failed.attempts, max_attempts=task.max_attempts
-                )
-                if recovery.retry and task.can_retry():
-                    return _Candidate(task, DecisionType.RETRY_TASK, recovery.rationale)
+                decision = engine.decide(attempts=failed.attempts, max_attempts=task.max_attempts)
+                if decision.retry and task.can_retry():
+                    return _Candidate(task, DecisionType.RETRY_TASK, decision.rationale)
         return None
+
+    async def run_triggered_cycle(
+        self,
+        actor: User,
+        policy: EventTriggerPolicy,
+        event: EventEnvelope,
+        cycle_id: str,
+    ) -> dict[str, Any]:
+        """Run one eligible task under the trigger policy and permission gates."""
+        if (
+            not policy.enabled
+            or event.type != policy.event_type
+            or event.type not in TRIGGER_EVENT_TYPES
+            or event.organization_id != policy.organization_id
+            or event.company_id != policy.company_id
+        ):
+            raise ValidationError("trigger policy is disabled or mismatched")
+        membership = await self._memberships.get(policy.organization_id, actor.id)
+        if membership is None or membership.role.value != "owner":
+            raise NotAMember(f"user {actor.id} is not an authorized trigger actor")
+        company = await self._companies.get(policy.organization_id, policy.company_id)
+        if company is None or company.status is not CompanyStatus.ACTIVE:
+            raise ValidationError("trigger company is missing or inactive")
+        self._safety_guard.check_event(policy=policy, event=event)
+        observation = await self._observe(policy.organization_id, policy.company_id)
+        candidate = self.select_candidate(
+            observation,
+            recovery=RecoveryEngine(max_retries=policy.limits.max_retries_per_task),
+        )
+        if candidate is None:
+            decision = Decision.create(
+                company_id=policy.company_id,
+                decision_type=DecisionType.WAIT,
+                payload={},
+                rationale="no eligible work for triggered event",
+                cycle_id=cycle_id,
+            )
+            await self._records.add(
+                DecisionRecord.create(
+                    organization_id=policy.organization_id,
+                    company_id=policy.company_id,
+                    decision=decision,
+                    observation_digest=observation.digest,
+                    outcome_context={"status": "stopped", "reason": "no_eligible_work"},
+                )
+            )
+            return {"status": "no_eligible_work", "observation_digest": observation.digest}
+
+        task = await self._tasks.get_task(
+            actor, policy.organization_id, policy.company_id, candidate.task.id
+        )
+        if task.company_id != policy.company_id or task.id != candidate.task.id:
+            raise ValidationError("trigger task tenant or identity mismatch")
+        decision = Decision.create(
+            company_id=policy.company_id,
+            decision_type=candidate.decision_type,
+            payload={"task_id": str(task.id)},
+            rationale=candidate.rationale,
+            cycle_id=cycle_id,
+        )
+        context = TriggerDispatchContext(
+            event=event,
+            policy=policy,
+            decision=decision,
+            observation_digest=observation.digest,
+            observed_task_status=task.status,
+            observed_task_attempts=task.attempts,
+        )
+        self._safety_guard.check_dispatch(company=company, task=task, context=context)
+        task_after, execution, result = await self._orchestration.execute_task(
+            actor,
+            policy.organization_id,
+            policy.company_id,
+            task.id,
+            safety_context=context,
+            retry_failed=(candidate.decision_type is DecisionType.RETRY_TASK),
+        )
+        record = DecisionRecord.create(
+            organization_id=policy.organization_id,
+            company_id=policy.company_id,
+            decision=decision,
+            observation_digest=observation.digest,
+            outcome_context={
+                "status": "executed",
+                "task_status": task_after.status.value,
+                "execution_id": str(execution.id),
+                "result_status": result.status.value,
+            },
+        )
+        await self._records.add(record)
+        return {
+            "status": "executed",
+            "task_id": str(task_after.id),
+            "execution_id": str(execution.id),
+            "result_status": result.status.value,
+            "cycle_id": cycle_id,
+        }
 
     async def _record_local(
         self,

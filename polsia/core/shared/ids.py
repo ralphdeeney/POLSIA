@@ -82,6 +82,14 @@ class DecisionRecordId(_PrefixedId):
     prefix = "dcr"
 
 
+class TriggerPolicyId(_PrefixedId):
+    prefix = "trp"
+
+
+class TriggerDeliveryId(_PrefixedId):
+    prefix = "tdl"
+
+
 class AgentId(_PrefixedId):
     prefix = "agt"
 

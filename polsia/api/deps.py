@@ -25,6 +25,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from polsia.adapters.persistence.decision_repositories import SqlAlchemyDecisionRecordRepository
 from polsia.adapters.persistence.event_store import SqlAlchemyEventStore
 from polsia.adapters.persistence.memory_repositories import SqlAlchemyMemoryStore
 from polsia.adapters.persistence.permission_repositories import (
@@ -70,7 +71,10 @@ from polsia.core.shared.ids import (
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
+from polsia.services.ceo_queries import CEOQueryService
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.memory import MemoryService
+from polsia.services.observation import CompanyStateObserver
 from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService, KpiService
 from polsia.services.registries import AgentService, ModelService, SkillService, ToolService
@@ -352,7 +356,11 @@ def get_task_service(request: Request, session: SessionDep) -> TaskService:
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 
 
-def get_execution_service(request: Request, session: SessionDep) -> ExecutionService:
+def get_execution_service(
+    request: Request,
+    session: SessionDep,
+    authorization: ExecutionAuthorizationServiceDep,
+) -> ExecutionService:
     injected = _services(request).get("executions")
     if injected is not None:
         return cast(ExecutionService, injected)
@@ -370,10 +378,36 @@ def get_execution_service(request: Request, session: SessionDep) -> ExecutionSer
         memberships=SqlAlchemyMembershipRepository(session),
         bus=bus,
         store=SqlAlchemyEventStore(session),
+        authorization=authorization,
     )
 
 
 ExecutionServiceDep = Annotated[ExecutionService, Depends(get_execution_service)]
+
+
+def get_execution_authorization_service(
+    request: Request,
+    session: SessionDep,
+    tasks: TaskServiceDep,
+    permissions: Annotated[PermissionService, Depends(get_permission_service)],
+    approvals: Annotated[ApprovalService, Depends(get_approval_service)],
+) -> ExecutionAuthorizationService:
+    injected = _services(request).get("execution_authorization")
+    if injected is not None:
+        return cast(ExecutionAuthorizationService, injected)
+    return ExecutionAuthorizationService(
+        tasks=tasks,
+        agents=SqlAlchemyAgentRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        permissions=permissions,
+        approvals=approvals,
+    )
+
+
+ExecutionAuthorizationServiceDep = Annotated[
+    ExecutionAuthorizationService, Depends(get_execution_authorization_service)
+]
 
 
 # -- Phase 2: registry services --------------------------------------------------
@@ -546,3 +580,31 @@ def get_usage_service(request: Request, session: SessionDep) -> UsageService:
 
 
 UsageServiceDep = Annotated[UsageService, Depends(get_usage_service)]
+
+
+# -- CEO read-only query service ------------------------------------------------
+
+
+def get_ceo_query_service(request: Request, session: SessionDep) -> CEOQueryService:
+    injected = _services(request).get("ceo_queries")
+    if injected is not None:
+        return cast(CEOQueryService, injected)
+    observer = _services(request).get("observer")
+    if observer is None:
+        observer = CompanyStateObserver(
+            goals=SqlAlchemyGoalRepository(session),
+            kpis=SqlAlchemyKpiRepository(session),
+            tasks=SqlAlchemyTaskRepository(session),
+            dependencies=SqlAlchemyTaskDependencyRepository(session),
+            agents=SqlAlchemyAgentRepository(session),
+            approvals=SqlAlchemyApprovalRepository(session),
+        )
+    return CEOQueryService(
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        observer=cast(CompanyStateObserver, observer),
+        records=SqlAlchemyDecisionRecordRepository(session),
+    )
+
+
+CEOQueryServiceDep = Annotated[CEOQueryService, Depends(get_ceo_query_service)]

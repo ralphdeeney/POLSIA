@@ -17,7 +17,8 @@ health probes.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import contextlib
+from collections.abc import AsyncIterator, Iterable
 from typing import Any
 
 from fastapi import APIRouter, FastAPI
@@ -33,6 +34,7 @@ from polsia.api.errors import install_error_handlers
 from polsia.api.routers import (
     agents_router,
     auth_router,
+    ceo_router,
     companies_router,
     executions_router,
     goals_router,
@@ -48,6 +50,7 @@ from polsia.api.routers import (
 )
 from polsia.infra.logging import configure_logging, get_logger
 from polsia.infra.settings import Settings, get_settings
+from polsia.services.event_triggers import EventTriggerDispatcher
 
 _PROBLEM_DB_ERROR = "database unreachable"
 
@@ -76,16 +79,34 @@ def create_app(
       ``app.state.services`` (e.g. ``{"auth": AuthService(...)}``,
       ``{"orgs": ...}``, ``{"companies": ...}``, ``{"tokens": ...}``).
       Entries take precedence over the built implementations when
-      :mod:`polsia.api.deps` resolves dependencies.
+      :mod:`polsia.api.deps` resolves dependencies. An explicitly composed
+      ``event_trigger_dispatcher`` is subscribed and caught up in the app
+      lifespan; no runtime or dispatcher is selected implicitly.
     """
     configure_logging()
     settings = settings or get_settings()
     services = services or {}
 
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        dispatcher = services.get("event_trigger_dispatcher")
+        if isinstance(dispatcher, EventTriggerDispatcher) and app.state.event_bus is not None:
+            dispatcher.subscribe(app.state.event_bus)
+            await dispatcher.catch_up()
+        if isinstance(dispatcher, EventTriggerDispatcher) and app.state.event_bus is not None:
+            try:
+                yield
+            finally:
+                dispatcher.stop_accepting()
+                await dispatcher.drain()
+        else:
+            yield
+
     app = FastAPI(
         title="Polsia",
         description="Autonomous Business Operating System",
         version="0.1.0",
+        lifespan=lifespan,
         # Docs/openapi are a development convenience — disabled in production.
         docs_url="/docs" if settings.env == "development" else None,
         redoc_url="/redoc" if settings.env == "development" else None,
@@ -114,6 +135,7 @@ def create_app(
             bus = InProcessEventBus()
             bus.subscribe("*", LoggingSubscriber())
         app.state.event_bus = bus
+        app.state.event_trigger_dispatcher = services.get("event_trigger_dispatcher")
         mount_routers(
             app,
             auth_router,
@@ -130,9 +152,11 @@ def create_app(
             tools_router,
             models_router,
             usage_router,
+            ceo_router,
         )
     else:
         app.state.event_bus = None
+        app.state.event_trigger_dispatcher = None
 
     return app
 

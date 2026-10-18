@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 import pytest
 from polsia.adapters.events import InProcessEventBus
 from polsia.adapters.persistence.decision_repositories import SqlAlchemyDecisionRecordRepository
+from polsia.adapters.persistence.event_store import SqlAlchemyEventStore
 from polsia.adapters.persistence.models import TaskExecutionModel
 from polsia.adapters.persistence.permission_repositories import (
     SqlAlchemyApprovalRepository,
@@ -26,15 +28,23 @@ from polsia.adapters.persistence.task_repositories import (
     SqlAlchemyTaskExecutionRepository,
     SqlAlchemyTaskRepository,
 )
+from polsia.adapters.persistence.trigger_models import TriggerDeliveryModel
+from polsia.adapters.persistence.trigger_repositories import SqlAlchemyEventTriggerPolicyRepository
 from polsia.adapters.runtime import DeterministicOrchestrator, MockRuntime
+from polsia.core.ceo.triggers import EventTriggerPolicy, SafetyLimits
+from polsia.core.permissions.errors import ApprovalRequired, PermissionDenied
 from polsia.core.permissions.values import PermissionDecision
 from polsia.core.planning.values import Priority
+from polsia.core.shared.errors import ValidationError
+from polsia.core.shared.events import EventEnvelope
 from polsia.core.tasks.values import TaskStatus
 from polsia.core.tenancy.entities import Company, Organization, OrgMembership, User
 from polsia.core.tenancy.values import CompanyStatus, MembershipRole
 from polsia.infra.db import create_all_metadata
 from polsia.services.autonomous_loop import AutonomousLoop
 from polsia.services.delegation import DelegationService
+from polsia.services.event_triggers import EventTriggerDispatcher, trigger_cycle_id
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.observation import CompanyStateObserver
 from polsia.services.orchestration import OrchestrationService
 from polsia.services.permissions import ApprovalService, PermissionService
@@ -78,15 +88,29 @@ async def loop_env():
                 )
             )
             task_service = TaskService(tasks_repo, deps, companies, memberships, bus)
-            execution_service = ExecutionService(
-                tasks_repo, executions_repo, deps, companies, memberships, bus
-            )
             permission_repo = SqlAlchemyPermissionRepository(session)
             approval_repo = SqlAlchemyApprovalRepository(session)
             permission_service = PermissionService(
                 permission_repo, approval_repo, companies, memberships, bus
             )
             approval_service = ApprovalService(approval_repo, companies, memberships, bus)
+            authorization = ExecutionAuthorizationService(
+                tasks=task_service,
+                agents=agents,
+                companies=companies,
+                memberships=memberships,
+                permissions=permission_service,
+                approvals=approval_service,
+            )
+            execution_service = ExecutionService(
+                tasks_repo,
+                executions_repo,
+                deps,
+                companies,
+                memberships,
+                bus,
+                authorization=authorization,
+            )
             agent_service = AgentService(agents, companies, memberships, bus)
             orchestration = OrchestrationService(
                 tasks=task_service,
@@ -125,6 +149,7 @@ async def loop_env():
             )
             yield {
                 "session": session,
+                "factory": factory,
                 "loop": loop,
                 "user": user,
                 "org": org,
@@ -237,6 +262,8 @@ class TestAutonomousLoop:
     async def test_stale_observation_cannot_exceed_iteration_budget(self, loop_env: Any) -> None:
         env = loop_env
         user, org, company = env["user"], env["org"], env["company"]
+        await env["agents"].register_agent(user, org.id, company.id, name="stale-worker")
+        await _allow_agent_execution(env)
         task = await env["tasks"].create_task(user, org.id, company.id, title="stale-ready")
         stale_observation = await env["loop"]._observer.observe(org.id, company.id)
         await env["loop"]._executions.start_execution(user, org.id, company.id, task.id)
@@ -300,6 +327,414 @@ class TestAutonomousLoop:
         assert rows == []
         approvals = await SqlAlchemyApprovalRepository(env["session"]).list_pending(company.id)
         assert len(approvals) == 1
+
+    async def test_triggered_cycle_executes_only_after_guard_and_explicit_allow(
+        self, loop_env: Any
+    ) -> None:
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(user, org.id, company.id, name="trigger-worker")
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task = await env["tasks"].create_task(user, org.id, company.id, title="trigger-ready")
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.ready",
+            enabled=True,
+        )
+        event = EventEnvelope(
+            event_type="task.ready", organization_id=org.id, company_id=company.id
+        )
+
+        runner = env["loop"].run_triggered_cycle
+        cycle_id = trigger_cycle_id(policy.id, event.id)
+        with pytest.raises(ValidationError, match="stale or future"):
+            await runner(
+                user,
+                policy,
+                EventEnvelope(
+                    event_type="task.ready",
+                    organization_id=org.id,
+                    company_id=company.id,
+                    occurred_at=event.occurred_at - dt.timedelta(minutes=10),
+                ),
+                cycle_id,
+            )
+        rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+        assert rows == []
+
+        result = await runner(user, policy, event, cycle_id)
+        assert result["status"] == "executed"
+        assert result["task_id"] == str(task.id)
+        rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+        assert len(rows) == 1
+
+    async def test_trigger_forged_payload_cannot_select_task_actor_or_runtime(
+        self, loop_env: Any
+    ) -> None:
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(user, org.id, company.id, name="forged-worker")
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        chosen = await env["tasks"].create_task(user, org.id, company.id, title="server-selected")
+        forged = await env["tasks"].create_task(user, org.id, company.id, title="forged-target")
+        runtime_calls: list[Any] = []
+        runtime = env["runtime"]
+        original_execute = runtime.execute
+
+        async def spy_execute(request: Any) -> Any:
+            runtime_calls.append(request)
+            return await original_execute(request)
+
+        runtime.execute = spy_execute
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.ready",
+            enabled=True,
+        )
+        event = EventEnvelope(
+            event_type="task.ready",
+            organization_id=org.id,
+            company_id=company.id,
+            payload={
+                "task_id": str(forged.id),
+                "actor_id": "usr_forged",
+                "runtime": "attacker-runtime",
+                "model": "attacker-model",
+            },
+        )
+        result = await env["loop"].run_triggered_cycle(
+            user, policy, event, trigger_cycle_id(policy.id, event.id)
+        )
+        assert result["status"] == "executed"
+        assert result["task_id"] == str(chosen.id)
+        assert len(runtime_calls) == 1
+        assert runtime_calls[0].task_id == chosen.id
+        assert runtime_calls[0].agent_id == agent.id
+        assert runtime_calls[0].runtime == "mock"
+        assert runtime_calls[0].model == agent.model_reference
+        assert runtime_calls[0].context == {}
+        rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].task_id == str(chosen.id)
+        assert rows[0].agent_id == str(agent.id)
+        assert rows[0].runtime == "mock"
+
+    @pytest.mark.parametrize(
+        "limits",
+        [
+            SafetyLimits(max_actions=1),
+            SafetyLimits(max_tasks=1),
+            SafetyLimits(max_executions=1),
+        ],
+        ids=["action-cap", "task-cap", "execution-cap"],
+    )
+    async def test_trigger_executes_at_each_configured_single_action_cap(
+        self, loop_env: Any, limits: SafetyLimits
+    ) -> None:
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(user, org.id, company.id, name="cap-worker")
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task = await env["tasks"].create_task(user, org.id, company.id, title="cap task")
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.ready",
+            enabled=True,
+            limits=limits,
+        )
+        event = EventEnvelope(
+            event_type="task.ready", organization_id=org.id, company_id=company.id
+        )
+        await SqlAlchemyEventTriggerPolicyRepository(env["session"]).add(policy)
+        await SqlAlchemyEventStore(env["session"]).append(event)
+        await env["session"].commit()
+        dispatcher = EventTriggerDispatcher(
+            session_factory=env["factory"], run_cycle=env["loop"].run_triggered_cycle
+        )
+        assert await dispatcher.dispatch(event.id) == 1
+        assert await dispatcher.dispatch(event.id) == 0
+        assert await dispatcher.catch_up() == 0
+        rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].task_id == str(task.id)
+        assert len(await env["records"].list_for_company(org.id, company.id)) == 1
+        deliveries = (await env["session"].execute(select(TriggerDeliveryModel))).scalars().all()
+        assert len(deliveries) == 1
+        assert deliveries[0].status == "completed"
+
+    async def test_trigger_retry_cap_rejects_before_retry_or_execution(self, loop_env: Any) -> None:
+        """A task beyond its configured retry limit is not eligible trigger
+        work: no retry, no execution, and no decision beyond the WAIT record.
+        (Guard-level boundary rejection is covered by the SafetyGuard unit
+        tests in test_event_triggers.py.)"""
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(
+            user, org.id, company.id, name="retry-cap-worker"
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task = await env["tasks"].create_task(
+            user, org.id, company.id, title="retry cap", input={"fail": True}, max_attempts=4
+        )
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        await env["loop"]._executions.retry_task(user, org.id, company.id, task.id)
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        before = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert before.status is TaskStatus.FAILED
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.failed",
+            enabled=True,
+            limits=SafetyLimits(max_retries_per_task=1),
+        )
+        event = EventEnvelope(
+            event_type="task.failed", organization_id=org.id, company_id=company.id
+        )
+        result = await env["loop"].run_triggered_cycle(
+            user, policy, event, trigger_cycle_id(policy.id, event.id)
+        )
+        assert result["status"] == "no_eligible_work"
+        after = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert after.attempts == before.attempts
+        rows = (
+            (
+                await env["session"].execute(
+                    select(TaskExecutionModel).order_by(TaskExecutionModel.attempt_number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [row.attempt_number for row in rows] == [1, 2]
+        records = await env["records"].list_for_company(org.id, company.id)
+        assert len(records) == 1
+        assert records[0].outcome_context["reason"] == "no_eligible_work"
+
+    async def test_configured_retry_limit_three_permits_third_retry_end_to_end(
+        self, loop_env: Any
+    ) -> None:
+        """The trigger path enforces exactly the configured retry limit: a
+        policy of 3 retries permits the third retry (two retries used), which
+        a hidden default two-retry cap would have rejected."""
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(
+            user, org.id, company.id, name="retry-three-worker"
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task = await env["tasks"].create_task(
+            user, org.id, company.id, title="retry three", input={"fail": True}, max_attempts=6
+        )
+        # burn three attempts (original run + two explicit retries), leaving
+        # retries_used=2: within a configured limit of 3
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        await env["loop"]._executions.retry_task(user, org.id, company.id, task.id)
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        await env["loop"]._executions.retry_task(user, org.id, company.id, task.id)
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        before = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert before.status is TaskStatus.FAILED
+        assert before.attempts == 3
+
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.failed",
+            enabled=True,
+            limits=SafetyLimits(max_retries_per_task=3),
+        )
+        event = EventEnvelope(
+            event_type="task.failed", organization_id=org.id, company_id=company.id
+        )
+        await env["loop"].run_triggered_cycle(
+            user, policy, event, trigger_cycle_id(policy.id, event.id)
+        )
+        after = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert after.attempts == 4
+        rows = (
+            (
+                await env["session"].execute(
+                    select(TaskExecutionModel).order_by(TaskExecutionModel.attempt_number)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [row.attempt_number for row in rows] == [1, 2, 3, 4]
+
+    async def test_task_max_attempts_bound_trigger_retry_independently(self, loop_env: Any) -> None:
+        """A generous policy retry limit still cannot exceed the task's own
+        max_attempts ceiling: an exhausted task is not eligible retry work."""
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(
+            user, org.id, company.id, name="max-attempt-worker"
+        )
+        await env["permissions"].set_policy(
+            user,
+            org.id,
+            company.id,
+            principal_type="agent",
+            principal_id=str(agent.id),
+            resource_type="task",
+            resource_id=None,
+            action="execute",
+            decision=PermissionDecision.ALLOW,
+        )
+        task = await env["tasks"].create_task(
+            user, org.id, company.id, title="max attempts", input={"fail": True}, max_attempts=1
+        )
+        await env["loop"]._orchestration.execute_task(user, org.id, company.id, task.id)
+        failed = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert failed.attempts == 1
+
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.failed",
+            enabled=True,
+            limits=SafetyLimits(max_retries_per_task=10),
+        )
+        event = EventEnvelope(
+            event_type="task.failed", organization_id=org.id, company_id=company.id
+        )
+        result = await env["loop"].run_triggered_cycle(
+            user, policy, event, trigger_cycle_id(policy.id, event.id)
+        )
+        assert result["status"] == "no_eligible_work"
+        after = await env["tasks"].get_task(user, org.id, company.id, task.id)
+        assert after.attempts == 1
+        rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+        assert len(rows) == 1
+        records = await env["records"].list_for_company(org.id, company.id)
+        assert len(records) == 1
+        assert records[0].outcome_context["reason"] == "no_eligible_work"
+
+    async def test_stale_trigger_without_eligible_work_is_rejected_before_wait_record(
+        self, loop_env: Any
+    ) -> None:
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.ready",
+            enabled=True,
+        )
+        event = EventEnvelope(
+            event_type="task.ready",
+            organization_id=org.id,
+            company_id=company.id,
+            occurred_at=dt.datetime.now(dt.UTC) - dt.timedelta(hours=1),
+        )
+
+        with pytest.raises(ValidationError, match="stale or future"):
+            await env["loop"].run_triggered_cycle(
+                user, policy, event, trigger_cycle_id(policy.id, event.id)
+            )
+        assert await env["records"].list_for_company(org.id, company.id) == []
+
+    async def test_triggered_cycle_deny_and_approval_never_call_runtime(
+        self, loop_env: Any
+    ) -> None:
+        env = loop_env
+        user, org, company = env["user"], env["org"], env["company"]
+        agent = await env["agents"].register_agent(user, org.id, company.id, name="trigger-gated")
+        task = await env["tasks"].create_task(user, org.id, company.id, title="trigger-gated")
+        runtime_calls: list[object] = []
+        runtime = env["runtime"]
+        original_execute = runtime.execute
+
+        async def spy_execute(request: object) -> object:
+            runtime_calls.append(request)
+            return await original_execute(request)  # type: ignore[arg-type]
+
+        runtime.execute = spy_execute
+        policy = EventTriggerPolicy.create(
+            organization_id=org.id,
+            company_id=company.id,
+            event_type="task.ready",
+            enabled=True,
+        )
+        event = EventEnvelope(
+            event_type="task.ready", organization_id=org.id, company_id=company.id
+        )
+        runner = env["loop"].run_triggered_cycle
+        for decision, exception in (
+            (PermissionDecision.DENY, PermissionDenied),
+            (PermissionDecision.APPROVAL_REQUIRED, ApprovalRequired),
+        ):
+            await env["permissions"].set_policy(
+                user,
+                org.id,
+                company.id,
+                principal_type="agent",
+                principal_id=str(agent.id),
+                resource_type="task",
+                resource_id=None,
+                action="execute",
+                decision=decision,
+            )
+            with pytest.raises(exception):
+                await runner(user, policy, event, trigger_cycle_id(policy.id, event.id))
+            rows = (await env["session"].execute(select(TaskExecutionModel))).scalars().all()
+            assert rows == []
+        assert runtime_calls == []
+        assert task.status is TaskStatus.READY
 
     async def test_no_work_wait_record_and_budget_validation(self, loop_env: Any) -> None:
         env = loop_env

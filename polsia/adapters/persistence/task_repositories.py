@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,14 +101,29 @@ class SqlAlchemyTaskRepository:
         row = (await self._session.scalars(stmt)).first()
         return _to_task(row) if row is not None else None
 
-    async def list_for_company(self, company_id: CompanyId) -> list[Task]:
-        stmt = (
-            select(TaskModel)
-            .where(TaskModel.company_id == str(company_id))
-            .order_by(TaskModel.created_at, TaskModel.id)
-        )
+    async def list_for_company(
+        self,
+        company_id: CompanyId,
+        *,
+        status: TaskStatus | None = None,
+        limit: int | None = None,
+    ) -> list[Task]:
+        stmt = select(TaskModel).where(TaskModel.company_id == str(company_id))
+        if status is not None:
+            stmt = stmt.where(TaskModel.status == status.value)
+        stmt = stmt.order_by(TaskModel.created_at, TaskModel.id)
+        if limit is not None:
+            stmt = stmt.limit(limit)
         rows = (await self._session.scalars(stmt)).all()
         return [_to_task(row) for row in rows]
+
+    async def count_for_company(self, company_id: CompanyId) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(TaskModel)
+            .where(TaskModel.company_id == str(company_id))
+        )
+        return int(await self._session.scalar(stmt) or 0)
 
     async def list_for_goal(self, company_id: CompanyId, goal_id: GoalId) -> list[Task]:
         stmt = (
@@ -155,6 +171,30 @@ class SqlAlchemyTaskRepository:
         except IntegrityError as exc:
             await self._session.rollback()
             raise translate_integrity_error(exc) from exc
+
+    async def start_attempt(self, expected: Task, running: Task) -> bool:
+        """Compare-and-set one authorized attempt against the checked snapshot."""
+        result = await self._session.execute(
+            update(TaskModel)
+            .where(
+                TaskModel.id == str(expected.id),
+                TaskModel.company_id == str(expected.company_id),
+                TaskModel.status == expected.status.value,
+                TaskModel.attempts == expected.attempts,
+                TaskModel.updated_at == expected.updated_at,
+            )
+            .values(
+                status=running.status.value,
+                attempts=running.attempts,
+                assigned_agent_id=(
+                    str(running.assigned_agent_id) if running.assigned_agent_id else None
+                ),
+                updated_at=running.updated_at,
+                started_at=running.started_at,
+            )
+        )
+        await self._session.flush()
+        return isinstance(result, CursorResult) and result.rowcount == 1
 
 
 class SqlAlchemyTaskDependencyRepository:

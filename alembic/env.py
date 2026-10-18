@@ -27,6 +27,12 @@ if config.config_file_name is not None:
 
 # Model metadata for autogenerate support.
 importlib.import_module("polsia.adapters.persistence.decision_models")
+importlib.import_module("polsia.adapters.persistence.event_models")
+importlib.import_module("polsia.adapters.persistence.memory_models")
+importlib.import_module("polsia.adapters.persistence.permission_models")
+importlib.import_module("polsia.adapters.persistence.registry_models")
+importlib.import_module("polsia.adapters.persistence.trigger_models")
+importlib.import_module("polsia.adapters.persistence.usage_repositories")
 target_metadata = Base.metadata
 
 PLACEHOLDER = "__POLSIA_DATABASE_URL__"

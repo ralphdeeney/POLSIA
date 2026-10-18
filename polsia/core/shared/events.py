@@ -7,8 +7,10 @@ it in Phase 2 without changing services or consumers.
 
 from __future__ import annotations
 
+import contextvars
 import datetime as dt
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import Any, Protocol
 
 from polsia.core.shared.ids import CompanyId, EventId, OrganizationId
@@ -26,6 +28,27 @@ def _type_name(event_type: str) -> str:
             f"event type must be '<namespace>.<name>' in snake case, got {event_type!r}"
         )
     return event_type
+
+
+_event_metadata: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "polsia_event_metadata", default=None
+)
+
+
+@contextmanager
+def event_metadata_scope(values: dict[str, Any]) -> Iterator[None]:
+    """Attach causal metadata to events emitted inside the current task context."""
+    current = dict(_event_metadata.get() or {})
+    current.update(values)
+    token = _event_metadata.set(current)
+    try:
+        yield
+    finally:
+        _event_metadata.reset(token)
+
+
+def current_event_metadata() -> dict[str, Any]:
+    return dict(_event_metadata.get() or {})
 
 
 class EventEnvelope:
@@ -91,7 +114,7 @@ class EventEnvelope:
         object.__setattr__(self, "aggregate_type", aggregate_type)
         object.__setattr__(self, "aggregate_id", aggregate_id)
         object.__setattr__(self, "actor", actor)
-        object.__setattr__(self, "metadata", dict(metadata or {}))
+        object.__setattr__(self, "metadata", {**dict(metadata or {}), **current_event_metadata()})
 
     def __setattr__(self, name: str, value: Any) -> None:  # pragma: no cover
         raise AttributeError("EventEnvelope is immutable")

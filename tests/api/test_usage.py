@@ -30,8 +30,9 @@ from polsia.core.permissions.values import PermissionDecision
 from polsia.core.tenancy.entities import User as DomainUser
 from polsia.infra.db import create_all_metadata
 from polsia.infra.settings import Settings
+from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.orchestration import OrchestrationService
-from polsia.services.permissions import PermissionService
+from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService
 from polsia.services.registries import AgentService
 from polsia.services.tasks import ExecutionService, TaskService
@@ -116,9 +117,27 @@ async def run_one_execution(
         memberships,
         bus,
     )
+    task_service = TaskService(tasks, deps, companies, memberships, bus)
     orchestration = OrchestrationService(
-        tasks=TaskService(tasks, deps, companies, memberships, bus),
-        executions=ExecutionService(tasks, executions, deps, companies, memberships, bus),
+        tasks=task_service,
+        executions=ExecutionService(
+            tasks,
+            executions,
+            deps,
+            companies,
+            memberships,
+            bus,
+            authorization=ExecutionAuthorizationService(
+                tasks=task_service,
+                agents=agents,
+                companies=companies,
+                memberships=memberships,
+                permissions=permission_service,
+                approvals=ApprovalService(
+                    SqlAlchemyApprovalRepository(session), companies, memberships, bus
+                ),
+            ),
+        ),
         orchestrator=MockRuntime(),
         runtime=MockRuntime(),
         agents=agents,

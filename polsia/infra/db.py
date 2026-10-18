@@ -73,10 +73,15 @@ async def create_all_metadata(engine: AsyncEngine, *, metadata: object | None = 
     to keep this module fully decoupled.
     """
     if metadata is None:
-        from polsia.adapters.persistence import decision_models as _decision_models
+        from polsia.adapters.persistence import (
+            decision_models as _decision_models,
+        )
+        from polsia.adapters.persistence import (
+            trigger_models as _trigger_models,
+        )
         from polsia.adapters.persistence.models import Base
 
-        _ = _decision_models
+        _ = (_decision_models, _trigger_models)
         metadata = Base.metadata
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: metadata.create_all(sync_conn))  # type: ignore[attr-defined]

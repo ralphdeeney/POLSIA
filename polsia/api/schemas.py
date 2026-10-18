@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from polsia.core.planning.values import GoalStatus, KpiDirection, Priority
 from polsia.core.tenancy.values import CompanyStatus, MembershipRole
@@ -583,3 +583,80 @@ class UsageOut(BaseModel):
     )
     metadata: dict[str, Any]
     created_at: dt.datetime
+
+
+# -- CEO read-only query DTOs --------------------------------------------------
+
+
+class DecisionRecordOut(BaseModel):
+    @model_validator(mode="after")
+    def validate_json_payload_size(self) -> DecisionRecordOut:
+        from polsia.core.ceo.records import validate_decision_record_json
+
+        validate_decision_record_json(self.payload, self.outcome_context)
+        return self
+
+    id: str
+    organization_id: str
+    company_id: str
+    decision_type: str
+    payload: dict[str, Any]
+    rationale: str | None
+    confidence: float | None
+    model_reference: str | None
+    cycle_id: str | None
+    task_id: str | None
+    decision_created_at: dt.datetime
+    observation_digest: str
+    outcome_context: dict[str, Any]
+    recorded_at: dt.datetime
+
+
+class CycleSummaryOut(BaseModel):
+    cycle_id: str
+    decision_count: int
+    outcome_counts: dict[str, int]
+    first_recorded_at: dt.datetime
+    last_recorded_at: dt.datetime
+
+
+class KpiAttentionSummaryOut(BaseModel):
+    kpi_id: str
+    status: str
+    reason: str
+
+
+class FailedTaskSummaryOut(BaseModel):
+    task_id: str
+    attempts: int
+    can_retry: bool
+    error: str | None
+
+
+class PendingApprovalSummaryOut(BaseModel):
+    id: str
+    action: str
+    resource_type: str
+    resource_id: str | None
+
+
+class ObservationSummaryOut(BaseModel):
+    """Bounded observation response. List caps mirror ObservationLimits; count
+    fields are uncapped totals so clients can detect truncation."""
+
+    organization_id: str
+    company_id: str
+    generated_at: dt.datetime
+    digest: str
+    goals_total: int
+    active_goal_ids: list[str] = Field(max_length=1000)
+    kpis_total: int
+    kpis_attention: list[KpiAttentionSummaryOut] = Field(max_length=1000)
+    tasks_total: int
+    ready_task_ids: list[str] = Field(max_length=1000)
+    pending_task_ids: list[str] = Field(max_length=1000)
+    running_task_ids: list[str] = Field(max_length=1000)
+    failed_tasks: list[FailedTaskSummaryOut] = Field(max_length=1000)
+    blocked_task_ids: list[str] = Field(max_length=1000)
+    selectable_agent_ids: list[str] = Field(max_length=1000)
+    pending_approvals: list[PendingApprovalSummaryOut] = Field(max_length=1000)

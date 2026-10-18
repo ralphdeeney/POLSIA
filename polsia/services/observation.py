@@ -28,7 +28,6 @@ from polsia.core.planning.values import GoalStatus, KpiStatus
 from polsia.core.registry.ports import AgentRepository
 from polsia.core.shared.events import utcnow
 from polsia.core.shared.ids import CompanyId, OrganizationId, TaskId
-from polsia.core.tasks.entities import Task
 from polsia.core.tasks.ports import TaskDependencyRepository, TaskRepository
 from polsia.core.tasks.values import TaskStatus
 
@@ -46,6 +45,11 @@ class ObservationLimits:
     blocked_tasks: int = 50
     agents: int = 100
     pending_approvals: int = 50
+
+    def __post_init__(self) -> None:
+        for name, value in dataclasses.asdict(self).items():
+            if type(value) is not int or not 1 <= value <= 1000:
+                raise ValueError(f"{name} must be an integer between 1 and 1000")
 
 
 _DEFAULT_LIMITS = ObservationLimits()
@@ -133,15 +137,27 @@ class CompanyStateObserver:
         severity = {KpiStatus.MISSED: 0, KpiStatus.AT_RISK: 1}
         attention.sort(key=lambda a: (severity[a.kpi.status], a.kpi.name))
 
-        all_tasks = await self._tasks.list_for_company(company_id)
-        by_status: dict[TaskStatus, list[Task]] = {s: [] for s in TaskStatus}
-        for t in all_tasks:
-            by_status[t.status].append(t)
+        # Tasks are the dominant table. Push the bound, the status filter and
+        # the total count into the repository so observation never materializes
+        # an unbounded task table (mandate §5: no full-table dumps).
+        tasks_total = await self._tasks.count_for_company(company_id)
+        ready_tasks = await self._tasks.list_for_company(
+            company_id, status=TaskStatus.READY, limit=limits.ready_tasks
+        )
+        pending_tasks = await self._tasks.list_for_company(
+            company_id, status=TaskStatus.PENDING, limit=limits.pending_tasks
+        )
+        running_tasks = await self._tasks.list_for_company(
+            company_id, status=TaskStatus.RUNNING, limit=limits.running_tasks
+        )
+        failed_rows = await self._tasks.list_for_company(
+            company_id, status=TaskStatus.FAILED, limit=limits.failed_tasks
+        )
 
         async def _unmet(task_id: TaskId) -> list[str]:
             unmet: list[str] = []
             for dep_id in await self._dependencies.dependencies_of(company_id, task_id):
-                dep = next((t for t in all_tasks if t.id == dep_id), None)
+                dep = await self._tasks.get(company_id, dep_id)
                 if dep is None or dep.status is not TaskStatus.COMPLETED:
                     unmet.append(str(dep_id))
             return unmet
@@ -153,12 +169,12 @@ class CompanyStateObserver:
                 attempts=t.attempts,
                 can_retry=t.can_retry(),
             )
-            for t in by_status[TaskStatus.FAILED]
+            for t in failed_rows
         ]
         failed_tasks.sort(key=lambda f: (not f.can_retry, -f.attempts))
 
         blocked_tasks: list[BlockedTask] = []
-        for t in by_status[TaskStatus.PENDING]:
+        for t in pending_tasks:
             unmet = await _unmet(t.id)
             if unmet:
                 blocked_tasks.append(
@@ -190,23 +206,33 @@ class CompanyStateObserver:
             active_goals=active_goals[: limits.active_goals],
             goals_total=len(all_goals),
             kpis=all_kpis[: limits.kpis],
-            kpis_attention=attention,
-            tasks_total=len(all_tasks),
-            ready_tasks=by_status[TaskStatus.READY][: limits.ready_tasks],
-            pending_tasks=by_status[TaskStatus.PENDING][: limits.pending_tasks],
-            running_tasks=by_status[TaskStatus.RUNNING][: limits.running_tasks],
+            kpis_total=len(all_kpis),
+            kpis_attention=attention[: limits.kpis],
+            tasks_total=tasks_total,
+            ready_tasks=ready_tasks[: limits.ready_tasks],
+            pending_tasks=pending_tasks[: limits.pending_tasks],
+            running_tasks=running_tasks[: limits.running_tasks],
             failed_tasks=failed_tasks[: limits.failed_tasks],
             blocked_tasks=blocked_tasks[: limits.blocked_tasks],
             selectable_agents=selectable[: limits.agents],
             pending_approvals=pending_approvals[: limits.pending_approvals],
             digest="",  # placeholder; computed below
         )
+        # Digest version 2 hashes the *bounded* observation content plus totals.
+        # Version 1 hashed every task row, which forced an unbounded read; the
+        # recorded decision records remain valid as their own historical digest.
         digest_payload = {
+            "v": 2,
             "company_id": str(company_id),
             "generated_at": generated_at.isoformat(),
-            "goals": len(all_goals),
+            "goals_total": len(all_goals),
+            "kpis_total": len(all_kpis),
             "kpis": [(str(k.id), k.status.value, k.current_value) for k in observation.kpis],
-            "tasks": [(str(t.id), t.status.value, t.attempts) for t in all_tasks],
+            "tasks_total": tasks_total,
+            "tasks": [
+                (str(t.id), t.status.value, t.attempts)
+                for t in (*ready_tasks, *pending_tasks, *running_tasks, *failed_rows)
+            ],
             "agents": [str(a.id) for a in observation.selectable_agents],
             "pending_approvals": [a.id for a in observation.pending_approvals],
         }
