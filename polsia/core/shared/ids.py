@@ -120,3 +120,7 @@ class MemoryRecordId(_PrefixedId):
 
 class UsageRecordId(_PrefixedId):
     prefix = "usg"
+
+
+class BusinessIdeaId(_PrefixedId):
+    prefix = "biz"

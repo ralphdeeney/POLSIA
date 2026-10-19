@@ -74,6 +74,9 @@ async def create_all_metadata(engine: AsyncEngine, *, metadata: object | None = 
     """
     if metadata is None:
         from polsia.adapters.persistence import (
+            business_models as _business_models,
+        )
+        from polsia.adapters.persistence import (
             decision_models as _decision_models,
         )
         from polsia.adapters.persistence import (
@@ -81,7 +84,7 @@ async def create_all_metadata(engine: AsyncEngine, *, metadata: object | None = 
         )
         from polsia.adapters.persistence.models import Base
 
-        _ = (_decision_models, _trigger_models)
+        _ = (_business_models, _decision_models, _trigger_models)
         metadata = Base.metadata
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: metadata.create_all(sync_conn))  # type: ignore[attr-defined]
