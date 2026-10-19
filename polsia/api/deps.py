@@ -25,6 +25,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from polsia.adapters.persistence.business_repositories import SqlAlchemyBusinessIdeaRepository
 from polsia.adapters.persistence.decision_repositories import SqlAlchemyDecisionRecordRepository
 from polsia.adapters.persistence.event_store import SqlAlchemyEventStore
 from polsia.adapters.persistence.memory_repositories import SqlAlchemyMemoryStore
@@ -61,6 +62,7 @@ from polsia.core.shared.errors import (
 )
 from polsia.core.shared.ids import (
     AgentId,
+    BusinessIdeaId,
     CompanyId,
     GoalId,
     KpiId,
@@ -71,12 +73,17 @@ from polsia.core.shared.ids import (
 from polsia.core.tenancy.entities import User
 from polsia.infra.db import get_session
 from polsia.infra.settings import Settings
+from polsia.services.blueprint_service import BlueprintService
+from polsia.services.bootstrap import CompanyBootstrapService
+from polsia.services.business_intake import BusinessIdeaService
+from polsia.services.ceo_init import CeoInitializationService
 from polsia.services.ceo_queries import CEOQueryService
 from polsia.services.execution_authorization import ExecutionAuthorizationService
 from polsia.services.memory import MemoryService
 from polsia.services.observation import CompanyStateObserver
 from polsia.services.permissions import ApprovalService, PermissionService
 from polsia.services.planning import GoalService, KpiService
+from polsia.services.planning_engine import PlanningEngine
 from polsia.services.registries import AgentService, ModelService, SkillService, ToolService
 from polsia.services.tasks import ExecutionService, TaskService
 from polsia.services.tenancy import CompanyService, OrganizationService
@@ -608,3 +615,175 @@ def get_ceo_query_service(request: Request, session: SessionDep) -> CEOQueryServ
 
 
 CEOQueryServiceDep = Annotated[CEOQueryService, Depends(get_ceo_query_service)]
+
+
+# -- Phase 4 wave 3: business intake / blueprint / bootstrap -------------------
+
+
+def get_business_idea_service(request: Request, session: SessionDep) -> BusinessIdeaService:
+    injected = _services(request).get("business_ideas")
+    if injected is not None:
+        return cast(BusinessIdeaService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return BusinessIdeaService(
+        ideas=SqlAlchemyBusinessIdeaRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+        store=SqlAlchemyEventStore(session),
+    )
+
+
+BusinessIdeaServiceDep = Annotated[BusinessIdeaService, Depends(get_business_idea_service)]
+
+
+def get_blueprint_generator(request: Request) -> Any:
+    """Blueprint source: an injected port, else the deterministic generator.
+
+    No model credentials are required by default — the deterministic generator
+    is the CI/offline-safe default, and a model-backed generator may be
+    injected by the composition root.
+    """
+    injected = _services(request).get("blueprint_generator")
+    if injected is not None:
+        return injected
+    from polsia.adapters.business.deterministic import DeterministicBlueprintGenerator
+
+    return DeterministicBlueprintGenerator()
+
+
+def get_blueprint_service(request: Request, session: SessionDep) -> BlueprintService:
+    injected = _services(request).get("blueprints")
+    if injected is not None:
+        return cast(BlueprintService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    return BlueprintService(
+        ideas=SqlAlchemyBusinessIdeaRepository(session),
+        generator=get_blueprint_generator(request),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+        bus=bus,
+        store=SqlAlchemyEventStore(session),
+    )
+
+
+BlueprintServiceDep = Annotated[BlueprintService, Depends(get_blueprint_service)]
+
+
+def get_company_bootstrap_service(request: Request, session: SessionDep) -> CompanyBootstrapService:
+    injected = _services(request).get("company_bootstrap")
+    if injected is not None:
+        return cast(CompanyBootstrapService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    store = SqlAlchemyEventStore(session)
+    companies = SqlAlchemyCompanyRepository(session)
+    memberships = SqlAlchemyMembershipRepository(session)
+    goals = SqlAlchemyGoalRepository(session)
+    return CompanyBootstrapService(
+        companies=companies,
+        memberships=memberships,
+        ideas=SqlAlchemyBusinessIdeaRepository(session),
+        company_service=CompanyService(companies, memberships, bus, store=store),
+        goal_service=GoalService(goals, companies, memberships, bus, store=store),
+        kpi_service=KpiService(
+            SqlAlchemyKpiRepository(session), goals, companies, memberships, bus, store=store
+        ),
+        agent_service=AgentService(
+            SqlAlchemyAgentRepository(session), companies, memberships, bus, store=store
+        ),
+        memory_service=MemoryService(
+            SqlAlchemyMemoryStore(session), companies, memberships, bus, store=store
+        ),
+        bus=bus,
+        store=store,
+    )
+
+
+CompanyBootstrapServiceDep = Annotated[
+    CompanyBootstrapService, Depends(get_company_bootstrap_service)
+]
+
+
+def get_planning_engine(request: Request, session: SessionDep) -> PlanningEngine:
+    """Deterministic PlanningEngine (a model-backed orchestrator may be injected)."""
+    injected = _services(request).get("planning_engine")
+    if injected is not None:
+        return cast(PlanningEngine, injected)
+    orchestrator = _services(request).get("orchestrator")
+    if orchestrator is None:
+        from polsia.adapters.runtime import DeterministicOrchestrator
+
+        orchestrator = DeterministicOrchestrator()
+    return PlanningEngine(
+        orchestrator,
+        goals=SqlAlchemyGoalRepository(session),
+        companies=SqlAlchemyCompanyRepository(session),
+        memberships=SqlAlchemyMembershipRepository(session),
+    )
+
+
+PlanningEngineDep = Annotated[PlanningEngine, Depends(get_planning_engine)]
+
+
+def get_ceo_init_service(
+    request: Request,
+    session: SessionDep,
+    planning_engine: PlanningEngineDep,
+    task_service: TaskServiceDep,
+) -> CeoInitializationService:
+    injected = _services(request).get("ceo_init")
+    if injected is not None:
+        return cast(CeoInitializationService, injected)
+    bus = request.app.state.event_bus
+    if bus is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="event bus not configured",
+        )
+    store = SqlAlchemyEventStore(session)
+    companies = SqlAlchemyCompanyRepository(session)
+    memberships = SqlAlchemyMembershipRepository(session)
+    return CeoInitializationService(
+        companies=companies,
+        memberships=memberships,
+        ideas=SqlAlchemyBusinessIdeaRepository(session),
+        company_service=CompanyService(companies, memberships, bus, store=store),
+        agent_service=AgentService(
+            SqlAlchemyAgentRepository(session), companies, memberships, bus, store=store
+        ),
+        goal_service=GoalService(
+            SqlAlchemyGoalRepository(session), companies, memberships, bus, store=store
+        ),
+        planning_engine=planning_engine,
+        tasks_service=task_service,
+        bus=bus,
+        store=store,
+    )
+
+
+CeoInitializationServiceDep = Annotated[CeoInitializationService, Depends(get_ceo_init_service)]
+
+
+def parse_business_idea_id(raw: str) -> BusinessIdeaId:
+    """Parse a business idea id from a path parameter; malformed ids are 404s."""
+    from polsia.core.business.errors import BusinessIdeaNotFound
+
+    try:
+        return BusinessIdeaId.parse(raw)
+    except ValueError as exc:
+        raise BusinessIdeaNotFound(f"business idea {raw!r} not found") from exc

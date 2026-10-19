@@ -1,6 +1,7 @@
 """API routers for the Polsia OS."""
 
 from polsia.api.routers.auth import router as auth_router
+from polsia.api.routers.business import router as business_router
 from polsia.api.routers.ceo import router as ceo_router
 from polsia.api.routers.companies import router as companies_router
 from polsia.api.routers.goals import router as goals_router
@@ -20,6 +21,7 @@ from polsia.api.routers.usage import router as usage_router
 __all__ = [
     "agents_router",
     "auth_router",
+    "business_router",
     "companies_router",
     "ceo_router",
     "executions_router",

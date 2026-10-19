@@ -34,6 +34,7 @@ from polsia.api.errors import install_error_handlers
 from polsia.api.routers import (
     agents_router,
     auth_router,
+    business_router,
     ceo_router,
     companies_router,
     executions_router,
@@ -153,6 +154,7 @@ def create_app(
             models_router,
             usage_router,
             ceo_router,
+            business_router,
         )
     else:
         app.state.event_bus = None

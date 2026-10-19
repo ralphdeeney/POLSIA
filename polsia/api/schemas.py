@@ -660,3 +660,84 @@ class ObservationSummaryOut(BaseModel):
     blocked_task_ids: list[str] = Field(max_length=1000)
     selectable_agent_ids: list[str] = Field(max_length=1000)
     pending_approvals: list[PendingApprovalSummaryOut] = Field(max_length=1000)
+
+
+# -- Phase 4 wave 3: business intake, blueprints, bootstrap -------------------
+
+
+class BusinessIdeaCreate(BaseModel):
+    """Submit a business idea. ``raw_idea`` is preserved verbatim."""
+
+    raw_idea: str = Field(min_length=1, max_length=8000)
+    target_market: str | None = Field(default=None, max_length=2000)
+    industry: str | None = Field(default=None, max_length=255)
+    geo_preferences: list[str] = Field(default_factory=list, max_length=50)
+    budget_constraints: str | None = Field(default=None, max_length=2000)
+    additional_constraints: list[str] = Field(default_factory=list, max_length=50)
+    #: Optional caller-supplied idempotency key for safe request retries.
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
+class BusinessIdeaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    organization_id: str
+    owner_user_id: str
+    raw_idea: str
+    description: str
+    target_market: str | None
+    industry: str | None
+    geo_preferences: list[str]
+    budget_constraints: str | None
+    additional_constraints: list[str]
+    intake_status: str
+    blueprint_status: str
+    blueprint_version: int
+    submitted_at: dt.datetime
+
+
+class BusinessIdeaReject(BaseModel):
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class BlueprintOut(BaseModel):
+    """The persisted blueprint artifact + its provenance/lifecycle status."""
+
+    idea_id: str
+    organization_id: str
+    blueprint_status: str
+    blueprint_version: int
+    source: str
+    business_model: str
+    research_used: bool
+    blueprint: dict[str, Any]
+
+
+class BootstrapOut(BaseModel):
+    company: CompanyOut
+    company_id: str
+    goal_ids: list[str]
+    kpi_ids: list[str]
+    agent_ids: list[str]
+    memory_record_ids: list[str]
+    planning_ready: bool
+    idempotency_key: str
+    reused: bool
+
+
+class CeoInitOut(BaseModel):
+    company_id: str
+    agent_id: str
+    agent_name: str
+    goal_count: int
+    kpi_count: int
+    system_instructions: str
+
+
+class InitialPlanOut(BaseModel):
+    company_id: str
+    goal_id: str
+    objective: str
+    plan: dict[str, Any]
+    task_ids: list[str]
