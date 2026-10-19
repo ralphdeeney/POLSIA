@@ -25,7 +25,13 @@ import pathlib
 import sys
 import tempfile
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from dotenv import load_dotenv  # noqa: E402
+
+#: Root .env is gitignored; shell-exported variables still take precedence.
+load_dotenv(ROOT / ".env")
 
 from polsia.adapters.agent_runtime import (  # noqa: E402
     ExecutionBudget,
