@@ -240,6 +240,46 @@ Evaluation harnesses live in `polsia/eval/` with the runnable entry point
 `scripts/run_agent_evaluations.py`. Production autonomous composition remains
 unwired: the runtime is injected explicitly, exactly as in Phase 3.
 
+### 11c. Phase 4 wave 3 — business creation workflow
+
+The front of the operating system is now wired end to end:
+
+- **Intake** (`polsia/services/business_intake.py`, router
+  `/organizations/{org_id}/business-ideas`): owner-authenticated,
+  tenant-scoped submission with the exact user text preserved, validated
+  lifecycle status, multi-idea support and request idempotency keys.
+- **Blueprint** (`polsia/core/business/`, `polsia/services/blueprint_service.py`):
+  a typed, validated artifact covering identity, problem/customer/value,
+  product, revenue/pricing hypotheses, market/competition, go-to-market,
+  MVP, operations, technology, financial assumptions, goals, KPIs, agent
+  roster, risks, owner actions and validation requirements. Every claim
+  carries an explicit evidence status. Generation is a `BlueprintPort`:
+  deterministic offline by default, model-backed through the existing
+  `ModelPort` with versioned prompts and hard token/time/call budgets
+  (ADR-0016).
+- **Bootstrap** (`polsia/services/bootstrap.py`): materializes a validated
+  blueprint through the existing domain services into a company, goals, KPIs,
+  company-scoped agents (including the CEO), initial memory and
+  planning-readiness state. Idempotent by `bootstrap:{org}:{idea}`; refuses
+  unvalidated blueprints; never spends, registers or activates anything.
+- **CEO initialization** (`polsia/services/ceo_init.py`): configures the CEO
+  from trusted state and produces the initial plan through the deterministic
+  `PlanningEngine`; tasks are materialized only after plan validation.
+- **Verification** (`polsia/services/verification.py`): artifact completion
+  (schema, sections, consistency, ownership, persistence, provenance) is
+  verified separately from external-action evidence and research sourcing.
+- **Execution**: the first work item runs through
+  `OrchestrationService.execute_task` and `NativeAgentRuntime` under the
+  unchanged permission gate; the result is verified and observed through the
+  Phase 2/3 observation boundary.
+
+Blueprint quality is scored by a deterministic, reproducible scenario suite
+(`polsia/eval/business.py`, `scripts/run_business_evaluations.py`); the E2E
+suite (`tests/integration/test_business_creation_e2e.py`) covers the 16-step
+positive flow plus isolation, outage, budget, rollback/retry, forged-id and
+prompt-injection negatives. Model-backed arms remain scripted-only; live
+provider testing is **NOT RUN** without credentials.
+
 ## 12. Subagent orchestration policy
 
 See `CONTRIBUTING.md`. Architecture decisions are centralized with the Lead

@@ -112,11 +112,28 @@ see ADR-0013):
 | 14. Performance/concurrency | `tests/adapters/test_native_runtime_concurrency.py` (1/2/5/10 simulated) | done |
 | 13. Quality gates | ruff/mypy/layering/pytest 546 passed/0 failed | done |
 
+### Wave 3 (business creation workflow) — delivered
+
+| Plan item | Delivered as | State |
+| --- | --- | --- |
+| 8. `BusinessIdea` intake | `polsia/core/business/`, `polsia/services/business_intake.py`, migration 0012, API router | done |
+| 9. `CompanyBlueprint` | typed validated artifact + evidence honesty (`polsia/core/business/entities.py`) | done |
+| 10. `BlueprintPort` | `DeterministicBlueprintGenerator` (default/offline) + `ModelBackedBlueprintGenerator` (existing `ModelPort`, versioned prompts, budgets) | done; live model **NOT RUN** |
+| 11. Company bootstrap | `polsia/services/bootstrap.py` (existing services only, idempotent, resumable) | done |
+| 11a. CEO initialization + initial plan | `polsia/services/ceo_init.py` via deterministic `PlanningEngine` | done |
+| 12. E2E | `tests/integration/test_business_creation_e2e.py` (16-step flow + negatives + forged-id matrix) | done |
+| 12a. Blueprint evaluation | `polsia/eval/business.py` (15 labeled scenarios, reproducible) | done |
+| 12b. Performance/cost | `tests/integration/test_business_performance.py` | done |
+| 13. Quality gates | see final report; SQLite functional coverage only | done; PostgreSQL **NOT RUN** |
+
 Remaining for later waves: production autonomous composition root (Wave 4,
 still intentionally unwired), Postgres-validated lease concurrency, model-backed
 `PlanEnginePort` planning intelligence (Wave 5), real Laya benchmark with
-resource measurements, live smoke test execution once credentials exist, and
-business-idea intake/blueprint generation (Wave 3, still unstarted).
+resource measurements, live smoke test execution once credentials exist.
+Business-idea intake, blueprint generation and company bootstrap (Wave 3) are
+implemented; live-provider blueprint/CEO-plan testing remains **NOT RUN** until
+credentials exist, and PostgreSQL transaction/concurrency verification was not
+executed in this environment.
 
 ## Guardrails carried forward from Phase 3
 

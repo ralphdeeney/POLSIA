@@ -107,6 +107,12 @@ phases remain architectural targets.
 ## Phase 7 — Business generator
 - Bootstrap a company from a plain business idea: generates identity,
   strategy, goals, initial agent roster as **configuration**.
+- Wave 3 (Phase 4 plan) delivered the workflow early: tenant-scoped idea
+  intake, typed/validated blueprints with explicit evidence provenance,
+  deterministic + bounded model-backed generation, idempotent company
+  bootstrap, CEO initialization, initial plan materialization and a 15-scenario
+  deterministic blueprint evaluation (ADR-0016). Live-provider generation and
+  PostgreSQL concurrency verification remain **NOT RUN**.
 - **Exit:** two generated companies of different types run on identical core.
 
 ## Phase 8 — Real business integrations
