@@ -277,8 +277,11 @@ Blueprint quality is scored by a deterministic, reproducible scenario suite
 (`polsia/eval/business.py`, `scripts/run_business_evaluations.py`); the E2E
 suite (`tests/integration/test_business_creation_e2e.py`) covers the 16-step
 positive flow plus isolation, outage, budget, rollback/retry, forged-id and
-prompt-injection negatives. Model-backed arms remain scripted-only; live
-provider testing is **NOT RUN** without credentials.
+prompt-injection negatives. Model-backed arms are covered by scripted tests and
+by opt-in live runs: a production-adapter 9router run passed 15/15 merged
+scenario outcomes (`cx/gpt-5.6-sol`), and a Gemini 3.8 Flash smoke test passed.
+The full Gemini suite was blocked by the provider's free-tier quota. Live runs
+are never part of CI and require credentials.
 
 ## 12. Subagent orchestration policy
 

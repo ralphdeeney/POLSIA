@@ -100,6 +100,105 @@ async def test_tool_roundtrip_then_completion(tmp_path: Path) -> None:
     assert tool_nodes and tool_nodes[0]["ok"] is True
 
 
+async def test_tool_followup_messages_are_openai_compatible(tmp_path: Path) -> None:
+    """A strict provider must see assistant(tool_calls) before tool(...)."""
+    script = [
+        ScriptedResponse(
+            behavior=ScriptedModelBehavior.TOOL_CALL,
+            tool_name="echo",
+            tool_arguments={"text": "ping"},
+        ),
+        _final("after-tool"),
+    ]
+    provider = ScriptedModelProvider(script)
+    gateway = ToolGateway()
+    register_default_readonly_tools(gateway, whitelist_root=tmp_path)
+    runtime = NativeAgentRuntime(model=provider, tool_gateway=gateway)
+
+    result = await runtime.execute(_request())
+    assert result.status is RuntimeStatus.COMPLETED
+
+    # Tools advertised in the prompt are also declared to the provider.
+    assert [tool["name"] for tool in provider.requests[0].tools] == [
+        "current_date",
+        "echo",
+        "read_file",
+    ]
+
+    follow_up = provider.requests[1]
+    assert [message.role for message in follow_up.messages][-2:] == ["assistant", "tool"]
+    assistant, observation = follow_up.messages[-2], follow_up.messages[-1]
+    assert assistant.metadata["tool_calls"] == [
+        {
+            "id": "call_0",
+            "type": "function",
+            "function": {"name": "echo", "arguments": json.dumps({"text": "ping"})},
+        }
+    ]
+    assert observation.metadata["tool_call_id"] == "call_0"
+    assert json.loads(observation.content)["tool_call_id"] == "call_0"
+
+
+async def test_opaque_tool_call_extras_are_replayed(tmp_path: Path) -> None:
+    """Gemini thought signatures must be echoed verbatim on the follow-up turn."""
+    signature = {"google": {"thought_signature": "sig-abc"}}
+
+    class _SignatureModel:
+        name = "signature-model"
+
+        def __init__(self) -> None:
+            self.requests: list[ModelRequest] = []
+
+        async def generate(self, request: ModelRequest) -> ModelResponse:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return ModelResponse(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_1",
+                            "name": "echo",
+                            "arguments": {"text": "ping"},
+                            "extra_content": signature,
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                    usage=TokenUsage(prompt_tokens=3, completion_tokens=2),
+                )
+            return ModelResponse(
+                content=final_json("ok"),
+                finish_reason="stop",
+                usage=TokenUsage(prompt_tokens=3, completion_tokens=2),
+            )
+
+    gateway = ToolGateway()
+    register_default_readonly_tools(gateway, whitelist_root=tmp_path)
+    model = _SignatureModel()
+    runtime = NativeAgentRuntime(model=model, tool_gateway=gateway)
+
+    result = await runtime.execute(_request())
+    assert result.status is RuntimeStatus.COMPLETED
+    echoed = model.requests[1].messages[-2].metadata["tool_calls"]
+    assert echoed[0]["extra_content"] == signature
+
+
+async def test_tool_name_with_version_suffix_is_resolved(tmp_path: Path) -> None:
+    """Models echo the prompt's ``name@version`` spelling; it must still resolve."""
+    script = [
+        ScriptedResponse(
+            behavior=ScriptedModelBehavior.TOOL_CALL,
+            tool_name="echo@1.0.0",
+            tool_arguments={"text": "ping"},
+        ),
+        _final("after-versioned-tool"),
+    ]
+    runtime = _runtime(script, tmp_path)
+    result = await runtime.execute(_request())
+    assert result.status is RuntimeStatus.COMPLETED
+    assert result.tool_calls[0].ok is True
+    assert result.tool_calls[0].output["echo"] == "ping"
+
+
 async def test_claimed_text_completion_is_not_verifiable(tmp_path: Path) -> None:
     runtime = _runtime(
         [ScriptedResponse(behavior=ScriptedModelBehavior.COMPLETE, content="I completed it")],

@@ -91,7 +91,9 @@ phases remain architectural targets.
   E2E through the real orchestration stack, agent/routing evaluation
   harness, optional advisory decision layer (ADR-0015).
 - Dependency-ordered plan: see `docs/PHASE4-PLAN.md` (implementation status
-  table included). Live model smoke test remains opt-in / NOT RUN.
+  table included). Live model smoke test is opt-in; Gemini 3.8 Flash passed the
+  smoke test, and a 9router production-adapter run passed the 15-scenario
+  blueprint evaluation (merged), while the full Gemini suite was quota-blocked.
 - **Exit:** runtime swap requires zero changes above the port (conformance
   suite passes for `MockRuntime` and `NativeAgentRuntime`).
 
@@ -111,8 +113,9 @@ phases remain architectural targets.
   intake, typed/validated blueprints with explicit evidence provenance,
   deterministic + bounded model-backed generation, idempotent company
   bootstrap, CEO initialization, initial plan materialization and a 15-scenario
-  deterministic blueprint evaluation (ADR-0016). Live-provider generation and
-  PostgreSQL concurrency verification remain **NOT RUN**.
+  deterministic blueprint evaluation (ADR-0016). Live-provider blueprints were
+  validated through a 9router OpenAI-compatible endpoint (merged 15/15);
+  PostgreSQL concurrency verification remains **NOT RUN**.
 - **Exit:** two generated companies of different types run on identical core.
 
 ## Phase 8 — Real business integrations

@@ -322,8 +322,12 @@ class OpenAICompatibleModelProvider:
                     body: dict[str, Any] = response.json()
                     return body
                 if status not in _RETRYABLE_STATUS:
-                    raise self._normalized_error(status, correlation_id)
-                last_error = self._normalized_error(status, correlation_id)
+                    raise self._normalized_error(
+                        status, correlation_id, self._error_detail(response)
+                    )
+                last_error = self._normalized_error(
+                    status, correlation_id, self._error_detail(response)
+                )
             if attempt + 1 < attempts:
                 delay = self._backoff_delay(attempt, retry_after)
                 # Secret-safe: only allowed metadata fields are ever logged.
@@ -349,11 +353,41 @@ class OpenAICompatibleModelProvider:
         jitter = random.uniform(0.0, 0.05 if attempt == 0 else 0.1)
         return min(_BACKOFF_CAP_SECONDS, 0.25 * float(2**attempt) + jitter)
 
-    def _normalized_error(self, status: int, correlation_id: str) -> Exception:
+    @staticmethod
+    def _error_detail(response: httpx.Response) -> str:
+        """Bounded provider error text (quota/retry hints), never headers or keys.
+
+        Error bodies are provider-controlled and may be a dict or a list; only
+        the human-readable ``error.message`` is kept, whitespace-collapsed and
+        truncated, so a 429 can explain *why* (e.g. daily quota exhausted)
+        instead of a bare status code.
+        """
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        detail = ""
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict):
+                detail = str(error.get("message") or error.get("status") or "")
+        elif isinstance(body, list):
+            for item in body:
+                error = item.get("error") if isinstance(item, dict) else None
+                if isinstance(error, dict):
+                    detail = str(error.get("message") or error.get("status") or "")
+                    break
+        if not detail:
+            detail = response.text
+        return " ".join(detail.split())[:300]
+
+    def _normalized_error(self, status: int, correlation_id: str, detail: str = "") -> Exception:
         message = (
             f"provider error status={status} model={self._config.model} "
             f"correlation_id={correlation_id}"
         )
+        if detail:
+            message = f"{message} detail={detail}"
         if status == 429:
             return ProviderRateLimited(message)
         if 500 <= status < 600:
@@ -384,11 +418,7 @@ class OpenAICompatibleModelProvider:
             usage_reported = True
 
         tool_calls = [
-            {
-                "id": str(raw.get("id") or ""),
-                "name": str((raw.get("function") or {}).get("name") or ""),
-                "arguments": self._parse_arguments((raw.get("function") or {}).get("arguments")),
-            }
+            self._normalize_tool_call(raw)
             for raw in (message.get("tool_calls") or [])
             if isinstance(raw, dict)
         ]
@@ -414,6 +444,27 @@ class OpenAICompatibleModelProvider:
             ),
             metadata=metadata,
         )
+
+    def _normalize_tool_call(self, raw: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one tool call while preserving opaque provider extras.
+
+        Gemini 3.x attaches ``extra_content.google.thought_signature`` to every
+        function call and rejects the follow-up turn unless it is replayed
+        verbatim. Unknown extras are round-tripped rather than discarded so
+        provider-specific continuation tokens survive the neutral layer.
+        """
+        function = raw.get("function")
+        if not isinstance(function, dict):
+            function = {}
+        call: dict[str, Any] = {
+            "id": str(raw.get("id") or ""),
+            "name": str(function.get("name") or ""),
+            "arguments": self._parse_arguments(function.get("arguments")),
+        }
+        extra = raw.get("extra_content")
+        if isinstance(extra, dict):
+            call["extra_content"] = extra
+        return call
 
     @staticmethod
     def _parse_arguments(raw: Any) -> dict[str, Any]:

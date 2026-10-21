@@ -8,6 +8,8 @@ report digest (timestamps and latencies excluded).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from polsia.adapters.business.deterministic import DeterministicBlueprintGenerator
 from polsia.eval.business import SCENARIOS, dataset_fingerprint, evaluate_blueprints
@@ -101,6 +103,44 @@ def test_model_backed_arm_is_reported_not_run() -> None:
     report = evaluate_blueprints()
     assert report.model_arm.startswith("NOT RUN")
     assert any("no credentials" in note or "offline" in note for note in report.notes)
+
+
+class _FailingGenerator:
+    """Every call raises, like a provider outage or read timeout."""
+
+    name = "failing-live"
+
+    async def generate(self, idea: Any, *, context: Any = None) -> Any:
+        raise TimeoutError("provider timed out (simulated)")
+
+
+def test_generator_failure_is_recorded_per_scenario_not_raised() -> None:
+    report = evaluate_blueprints(_FailingGenerator())
+    assert report.total == 15
+    assert report.passed == 0
+    assert all(result.passed is False for result in report.scenarios)
+    assert all(result.error and "TimeoutError" in result.error for result in report.scenarios)
+    assert all(
+        [check.name for check in result.failed_checks] == ["generator_error"]
+        for result in report.scenarios
+    )
+    # The report is still produced, so a dead provider yields evidence, not a crash.
+    assert report.report_digest
+
+
+def test_generator_factory_builds_one_generator_per_scenario() -> None:
+    created: list[DeterministicBlueprintGenerator] = []
+
+    def factory() -> DeterministicBlueprintGenerator:
+        generator = DeterministicBlueprintGenerator()
+        created.append(generator)
+        return generator
+
+    report = evaluate_blueprints(generator_factory=factory, scenarios=SCENARIOS[:3])
+    assert len(created) == 3
+    assert report.total == 3
+    assert report.passed == 3
+    assert report.generator == "factory"
 
 
 @pytest.mark.parametrize(

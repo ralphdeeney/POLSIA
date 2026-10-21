@@ -44,6 +44,7 @@ from polsia.adapters.agent_runtime.state import (
 from polsia.adapters.agent_runtime.tool_gateway import (
     ToolGateway,
     ToolInvocationRequest,
+    ToolSpecification,
 )
 from polsia.core.memory.ports import MemoryPort
 from polsia.core.registry.ports import SkillRepository
@@ -206,14 +207,27 @@ class NativeAgentRuntime:
 
                 if response.tool_calls:
                     state = AgentRuntimeState.WAITING_FOR_TOOL
-                    for call in response.tool_calls:
+                    # Echo the assistant turn that requested the tools before the
+                    # observations. Strict OpenAI-compatible providers reject a
+                    # `tool` message unless it follows an assistant message with
+                    # matching `tool_calls` ids, so the conversation must stay
+                    # well-formed for the provider, not just for the fake model.
+                    calls, echo = _resolve_tool_calls(response.tool_calls)
+                    messages.append(
+                        ModelMessage(
+                            role="assistant",
+                            content=response.content or "",
+                            metadata={"tool_calls": echo},
+                        )
+                    )
+                    for call, call_id in calls:
                         if len(tool_calls) >= budget.max_tool_calls:
                             raise _ExecutionStop(
                                 AgentRuntimeState.FAILED,
                                 f"tool budget: exceeded {budget.max_tool_calls} tool calls",
                             )
                         record = await self._invoke_tool(
-                            request, call, agent_capability, trace_id, trace, messages
+                            request, call, call_id, agent_capability, trace_id, trace, messages
                         )
                         tool_calls.append(record)
                         if record.ok:
@@ -479,13 +493,9 @@ class NativeAgentRuntime:
             )
         )
         tool_specs = [
-            {"name": name, "parameters": parameters}
-            for name, parameters in (
-                (spec.name, spec.parameters)
-                for spec in self._gateway.registered()
-                if spec.allowed_for_agent(agent_capability)
-                and self._permission_decision(request, spec.name) == "allow"
-            )
+            {"name": spec.name, "parameters": spec.parameters}
+            for spec in self._gateway.registered()
+            if self._tool_is_authorized(request, spec, agent_capability)
         ]
         return messages, tool_specs, trace
 
@@ -495,15 +505,29 @@ class NativeAgentRuntime:
             return None
         return str(request.tool_permissions.get(tool_name, "")).strip().lower() or None
 
+    def _tool_is_authorized(
+        self,
+        request: RuntimeRequest,
+        spec: ToolSpecification,
+        agent_capability: str | None,
+    ) -> bool:
+        """The single rule that decides which tools a run may expose.
+
+        Used for both the prompt's authorized-tools list and the provider's
+        declared ``tools`` so the two can never drift: a model must never be
+        told about a tool that the request does not actually declare.
+        """
+        if not spec.allowed_for_agent(agent_capability):
+            return False
+        decision = self._permission_decision(request, spec.name)
+        return decision is None or decision == "allow"
+
     def _exposed_tools(
         self, request: RuntimeRequest, agent_capability: str | None
     ) -> tuple[str, ...]:
         names: list[str] = []
         for spec in self._gateway.registered():
-            if not spec.allowed_for_agent(agent_capability):
-                continue
-            decision = self._permission_decision(request, spec.name)
-            if decision is not None and decision != "allow":
+            if not self._tool_is_authorized(request, spec, agent_capability):
                 continue
             names.append(f"{spec.name}@{spec.version}")
         return tuple(names)
@@ -547,19 +571,22 @@ class NativeAgentRuntime:
         self,
         request: RuntimeRequest,
         call: dict[str, Any],
+        call_id: str,
         agent_capability: str | None,
         trace_id: str,
         trace: list[AgentExecutionTraceNode],
         messages: list[ModelMessage],
     ) -> ToolCallRecord:
-        tool_name = str(call.get("name") or "").strip()
+        tool_ref = str(call.get("name") or "").strip()
+        # The prompt advertises tools as ``name@version``; models often echo that
+        # spelling back, so accept both while the registry stays keyed by version.
+        tool_name, tool_version = _split_tool_ref(tool_ref)
         arguments = call.get("arguments")
         if not isinstance(arguments, dict):
             arguments = {}
-        call_id = str(call.get("id") or uuid.uuid4().hex)
         invocation = ToolInvocationRequest(
             tool_name=tool_name,
-            tool_version=None,
+            tool_version=tool_version,
             arguments=dict(arguments),
             company_id=str(request.company_id),
             task_id=str(request.task_id),
@@ -569,7 +596,7 @@ class NativeAgentRuntime:
         )
         result = await self._gateway.execute(invocation)
         record = ToolCallRecord(
-            tool=tool_name,
+            tool=tool_ref,
             action="invoke",
             input=dict(arguments),
             output=dict(result.output) if result.ok else {"error": result.error},
@@ -577,7 +604,7 @@ class NativeAgentRuntime:
         )
         observation = {
             "tool_call_id": call_id,
-            "tool": tool_name,
+            "tool": tool_ref,
             "ok": result.ok,
             "result": record.output,
         }
@@ -586,15 +613,21 @@ class NativeAgentRuntime:
                 kind="tool_call",
                 state=AgentRuntimeState.WAITING_FOR_TOOL,
                 sequence=len(trace),
-                tool_name=tool_name,
+                tool_name=tool_ref,
                 tool_call_id=call_id,
                 ok=result.ok,
             )
         )
         # Tool output is untrusted data: conveyed as an observation, never as
         # instructions, and truncated before it can flood the model context.
+        # ``tool_call_id`` metadata lets the provider adapter emit a valid
+        # OpenAI-style tool message that matches the assistant tool call.
         messages.append(
-            ModelMessage(role="tool", content=json.dumps(observation)[:MAX_TOOL_OBSERVATION_CHARS])
+            ModelMessage(
+                role="tool",
+                content=json.dumps(observation)[:MAX_TOOL_OBSERVATION_CHARS],
+                metadata={"tool_call_id": call_id},
+            )
         )
         return record
 
@@ -613,6 +646,45 @@ class NativeAgentRuntime:
         if not isinstance(payload, dict) or payload.get("type") != "final":
             return None
         return payload
+
+
+def _resolve_tool_calls(
+    calls: list[dict[str, Any]],
+) -> tuple[list[tuple[dict[str, Any], str]], list[dict[str, Any]]]:
+    """Pair reported tool calls with stable ids plus their assistant echo.
+
+    Ids are generated only when the provider omitted one, and the same id is
+    used for the assistant ``tool_calls`` entry and the matching ``tool``
+    observation, so strict OpenAI-compatible providers accept the sequence.
+    """
+    resolved: list[tuple[dict[str, Any], str]] = []
+    echo: list[dict[str, Any]] = []
+    for call in calls:
+        call_id = str(call.get("id") or "").strip() or uuid.uuid4().hex
+        resolved.append((call, call_id))
+        echoed: dict[str, Any] = {
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": str(call.get("name") or ""),
+                "arguments": json.dumps(call.get("arguments") or {}),
+            },
+        }
+        # Opaque provider continuation data (e.g. Gemini thought signatures)
+        # must be replayed verbatim on the assistant turn.
+        extra = call.get("extra_content")
+        if isinstance(extra, dict):
+            echoed["extra_content"] = extra
+        echo.append(echoed)
+    return resolved, echo
+
+
+def _split_tool_ref(reference: str) -> tuple[str, str | None]:
+    """Split ``name@version`` (as advertised in the prompt) into its parts."""
+    name, _, version = reference.partition("@")
+    name = name.strip()
+    version = version.strip()
+    return (name or reference, version or None)
 
 
 def _min_optional(*values: float | int | None) -> float | int | None:

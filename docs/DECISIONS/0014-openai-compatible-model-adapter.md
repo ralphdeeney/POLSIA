@@ -52,6 +52,10 @@ available for tests; no keys or model names are hardcoded anywhere.
 retry/backoff, error normalization, correlation headers, structured/tools
 payload mapping, capability probe, cleanup.
 
-LIVE SMOKE TEST: NOT RUN (no provider credentials in the execution
-environment). The opt-in script `scripts/live_model_smoke.py` performs the
-bounded harmless-read-only-tool run when credentials exist.
+LIVE SMOKE TEST: PASSED with Gemini 3.8 Flash (one bounded run, one
+`current_date` tool call, usage 2,242 prompt + 103 completion tokens, six trace
+nodes). A live 15-scenario blueprint evaluation was also run through this
+adapter against an OpenAI-compatible 9router endpoint (`cx/gpt-5.6-sol`):
+14/15 in the first continuous pass, and 15/15 merged after the one malformed-
+JSON failure was retried following a schema-repair feedback improvement. The
+opt-in scripts remain the supported path; no credentials are committed.

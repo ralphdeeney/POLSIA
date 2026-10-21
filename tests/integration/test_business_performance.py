@@ -146,7 +146,7 @@ class TestPerformanceAndIsolation:
         env = stack(_build_runtime([], tmp_path), generator)
         idea = await env["idea_service"].submit_idea(env["owner"], env["org"], raw_idea=IDEA)
         started = time.perf_counter()
-        blueprint, usage = await generator.generate(idea)
+        blueprint, usage = await generator.generate_with_usage(idea)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         blueprint.validate()
 
@@ -219,7 +219,7 @@ class TestPerformanceAndIsolation:
             ]
         )
         generator = ModelBackedBlueprintGenerator(provider)
-        blueprint, usage = await generator.generate(await _idea_for_perf())
+        blueprint, usage = await generator.generate_with_usage(await _idea_for_perf())
         blueprint.validate()
         print(
             f"PERF_RETRY {{'calls': {usage.model_calls}, 'retries': {usage.retries}, "

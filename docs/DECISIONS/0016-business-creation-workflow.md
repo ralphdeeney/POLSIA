@@ -29,7 +29,11 @@ bypassing the Phase 2/3 authorization and execution boundaries.
    - `ModelBackedBlueprintGenerator` — reuses the existing `ModelPort`, runs a
      fixed versioned prompt plan with per-call/total token, time and call
      budgets, bounded schema-repair retries, and produces a *proposal* only.
-     No new LLM client exists.
+     Intermediate outputs (business family, problem framing, missing details)
+     are carried into later prompts, and the composing prompt repeats budget,
+     conflicting-constraint and geographic constraints so they cannot be
+     silently dropped. Schema-repair feedback includes the concrete parse
+     error. No new LLM client exists.
    A proposal becomes usable only after `CompanyBlueprint.validate()` and the
    artifact verifier pass and the payload is durably persisted.
 4. **Evidence honesty is enforceable**: when `research_used` is false, any
@@ -69,13 +73,21 @@ bypassing the Phase 2/3 authorization and execution boundaries.
 
 ## Limitations
 
-- Model-backed blueprint generation and CEO planning are optional and were
-  exercised only with a scripted provider; **live-provider testing was NOT
-  RUN** (no credentials).
+- Model-backed blueprint generation and CEO planning are optional. The
+  production adapter was exercised live through an OpenAI-compatible 9router
+  endpoint (`cx/gpt-5.6-sol`): 14/15 in the first continuous pass, then 15/15
+  merged after the sole malformed-JSON failure passed on a targeted retry
+  following the schema-repair improvement. Gemini 3.8 Flash passed the bounded
+  smoke test; the full Gemini suite was quota-blocked by the free tier (20
+  requests/day). An OpenCode/DeepSeek bridge was used for early prompt testing;
+  it is test-only and does not exercise the production transport. Live
+  model-backed CEO planning was **NOT RUN**.
 - PostgreSQL transaction/concurrency verification was **NOT RUN** in this
   environment; SQLite covers functional and idempotency behaviour.
 - Blueprint quality is validated structurally and against deterministic
-  scenarios; real-world demand and pricing remain unvalidated hypotheses.
+  scenarios; real-world demand and pricing remain unvalidated hypotheses. No
+  live run registered a legal entity, bought a domain, spent money or activated
+  a paid account.
 
 ## Verification
 
@@ -85,6 +97,13 @@ bypassing the Phase 2/3 authorization and execution boundaries.
 - Deterministic 15-scenario blueprint evaluation
   (`polsia/eval/business.py`, `scripts/run_business_evaluations.py`,
   `tests/eval/test_blueprint_evaluation.py`), reproducible report digest.
+- Live 15-scenario evaluation through the production
+  `OpenAICompatibleModelProvider` against a 9router endpoint
+  (`cx/gpt-5.6-sol`): three contiguous chunks plus one targeted retry, merged
+  15/15, report digest `a95c47a9e61110ed`. The first continuous pass was
+  14/15; the malformed-JSON budget scenario is preserved as a retry, not
+  rewritten. Prompt version, provider model and redacted key metadata are
+  recorded in the report.
 - 16-step end-to-end flow through real persistence, one bounded
   `NativeAgentRuntime` execution, observation, tenant-isolation matrix and
   negative paths (`tests/integration/test_business_creation_e2e.py`).

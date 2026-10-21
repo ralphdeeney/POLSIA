@@ -108,7 +108,7 @@ see ADR-0013):
 | 9. Agent evaluation framework | `polsia/eval/agent.py` (10 deterministic scenarios) | done |
 | 10. Routing A/B | `polsia/eval/routing.py` + fixed labeled dataset | A-arm done, accuracy 1.0, unsafe-route 0.0; Laya/LLM arms **NOT RUN** |
 | 11. E2E + negative paths | covered (deny/outage/forgery/isolation/budget) | done |
-| 11a. Live model smoke test | `scripts/live_model_smoke.py` (opt-in) | **NOT RUN** (no credentials) |
+| 11a. Live model smoke test | `scripts/live_model_smoke.py` (opt-in) | **PASSED** (Gemini 3.8 Flash smoke); full Gemini suite quota-blocked |
 | 14. Performance/concurrency | `tests/adapters/test_native_runtime_concurrency.py` (1/2/5/10 simulated) | done |
 | 13. Quality gates | ruff/mypy/layering/pytest 546 passed/0 failed | done |
 
@@ -118,22 +118,22 @@ see ADR-0013):
 | --- | --- | --- |
 | 8. `BusinessIdea` intake | `polsia/core/business/`, `polsia/services/business_intake.py`, migration 0012, API router | done |
 | 9. `CompanyBlueprint` | typed validated artifact + evidence honesty (`polsia/core/business/entities.py`) | done |
-| 10. `BlueprintPort` | `DeterministicBlueprintGenerator` (default/offline) + `ModelBackedBlueprintGenerator` (existing `ModelPort`, versioned prompts, budgets) | done; live model **NOT RUN** |
+| 10. `BlueprintPort` | `DeterministicBlueprintGenerator` (default/offline) + `ModelBackedBlueprintGenerator` (existing `ModelPort`, versioned prompts, budgets) | done; live model **RUN** (9router production adapter, merged 15/15, digest `a95c47a9e61110ed`; first pass 14/15 + 1/1 retry) |
 | 11. Company bootstrap | `polsia/services/bootstrap.py` (existing services only, idempotent, resumable) | done |
 | 11a. CEO initialization + initial plan | `polsia/services/ceo_init.py` via deterministic `PlanningEngine` | done |
 | 12. E2E | `tests/integration/test_business_creation_e2e.py` (16-step flow + negatives + forged-id matrix) | done |
 | 12a. Blueprint evaluation | `polsia/eval/business.py` (15 labeled scenarios, reproducible) | done |
 | 12b. Performance/cost | `tests/integration/test_business_performance.py` | done |
-| 13. Quality gates | see final report; SQLite functional coverage only | done; PostgreSQL **NOT RUN** |
+| 13. Quality gates | ruff, format, mypy, layering, 619 tests, migration round-trip | done; PostgreSQL **NOT RUN** |
 
 Remaining for later waves: production autonomous composition root (Wave 4,
 still intentionally unwired), Postgres-validated lease concurrency, model-backed
 `PlanEnginePort` planning intelligence (Wave 5), real Laya benchmark with
-resource measurements, live smoke test execution once credentials exist.
-Business-idea intake, blueprint generation and company bootstrap (Wave 3) are
-implemented; live-provider blueprint/CEO-plan testing remains **NOT RUN** until
-credentials exist, and PostgreSQL transaction/concurrency verification was not
-executed in this environment.
+resource measurements. Business-idea intake, blueprint generation and company
+bootstrap (Wave 3) are implemented and live-tested for blueprints through a
+9router production adapter; live model-backed CEO planning remains **NOT RUN**,
+and PostgreSQL transaction/concurrency verification was not executed in this
+environment.
 
 ## Guardrails carried forward from Phase 3
 

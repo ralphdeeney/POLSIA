@@ -8,6 +8,10 @@ outputs. This prompt composes the artifact; it does not verify it.
 - RAW IDEA (verbatim): {{raw_idea}}
 - STATED MARKET: {{target_market}}
 - STATED INDUSTRY: {{industry}}
+- BUDGET CONSTRAINTS: {{budget_constraints}}
+- ADDITIONAL CONSTRAINTS: {{additional_constraints}}
+- GEOGRAPHIC PREFERENCES: {{geo_preferences}}
+- MISSING DETAILS (from interpretation): {{missing_details}}
 - COMPANY NAME (provisional): {{company_name}}
 - CANONICAL DESCRIPTION: {{canonical_description}}
 - PROBLEM FRAMINGS: {{problem_framings}}
@@ -38,9 +42,28 @@ outputs. This prompt composes the artifact; it does not verify it.
 4. All sections must be non-empty. No placeholder text like "TBD".
 5. `initial_kpis[].goal_title` must match an `initial_goals[].title` exactly.
 6. Agent roster: 2-5 agents, each with a `name`, a `role` and non-empty
-   `capabilities`. This roster seeds company-scoped agent registration;
-   authorization is applied later and never granted by this prompt.
+   `capabilities`. Exactly one agent must have the role `"CEO"` (the company's
+   initial chief executive). This roster seeds company-scoped agent
+   registration; authorization is applied later and never granted by this
+   prompt.
 7. Do not invent market numbers, customer counts or revenue figures.
+8. Never drop an explicit constraint. When BUDGET CONSTRAINTS is not
+   `<absent>`, `startup_risks` must include a statement containing "budget" or
+   "spend", and `go_to_market` plus `customer_acquisition` must explicitly say
+   "no paid acquisition" or "organic".
+9. When constraints conflict (for example zero budget alongside a paid
+   marketing plan, or an immediate global launch with no resources), include a
+   `startup_risks` statement containing "conflict" or "contradiction", and a
+   `required_owner_actions` item asking the owner to resolve it.
+10. When MISSING DETAILS says the target customer or segment is unknown, set
+    `target_customer` to a string containing "unspecified" and add a
+    `required_owner_actions` item containing "segment" that asks the owner to
+    define it.
+11. Carry every GEOGRAPHIC PREFERENCE into `business_idea_summary` or
+    `required_owner_actions`.
+12. `business_model` must echo the supplied family exactly. If it is
+    `<absent>`, infer it and prefer `other` when the idea is vague; never
+    default to `saas` merely because software may be involved.
 
 ## Output contract
 
@@ -50,7 +73,7 @@ Return JSON only — the full blueprint payload:
   "type": "final",
   "output": {
     "company_identity": {"name": "<string>", "description": "<string>"},
-    "business_model": "<family from prior step>",
+    "business_model": "<exactly one of: saas, ecommerce, agency, ai_automation, local_services, digital_education, marketplace, subscription, physical_product, other; lower-case; echo the supplied family>",
     "business_idea_summary": "<string>",
     "customer_problem": "<string>",
     "target_customer": "<string>",

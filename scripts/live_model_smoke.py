@@ -58,6 +58,10 @@ def main() -> int:
         )
         return 0
 
+    # Reasoning models can take tens of seconds per call; override with
+    # POLSIA_LIVE_TIMEOUT if the provider is slower still.
+    request_timeout = float(os.environ.get("POLSIA_LIVE_TIMEOUT", "120"))
+
     async def run() -> int:
         with tempfile.TemporaryDirectory() as root:
             gateway = ToolGateway()
@@ -67,7 +71,7 @@ def main() -> int:
                     base_url=base_url,
                     api_key_env=api_key_env,
                     model=model,
-                    request_timeout_seconds=20.0,
+                    request_timeout_seconds=request_timeout,
                     max_retries=1,
                 )
             )
@@ -77,9 +81,9 @@ def main() -> int:
                 budget=ExecutionBudget(
                     max_iterations=3,
                     max_tool_calls=2,
-                    max_elapsed_seconds=60.0,
-                    max_model_tokens=2000,
-                    max_cost_usd=0.05,
+                    max_elapsed_seconds=300.0,
+                    max_model_tokens=6000,
+                    max_cost_usd=0.10,
                 ),
                 allow_text_final=True,  # live models may not obey the strict contract
             )
@@ -99,12 +103,23 @@ def main() -> int:
                     },
                 )
             )
+        print("model:", model, "timeout:", f"{request_timeout:.0f}s")
         print("status:", result.status.value)
         print("state:", result.metadata.get("runtime_state"))
         print("usage:", result.token_usage.prompt_tokens, "+", result.token_usage.completion_tokens)
         print("cost_usd:", result.metadata.get("cost_usd"))
         print("tool_calls:", [{"tool": c.tool, "ok": c.ok} for c in result.tool_calls])
         print("trace_nodes:", len(result.metadata.get("trace", [])))
+        if result.error:
+            print("error:", result.error)
+        if result.status is not RuntimeStatus.COMPLETED:
+            for node in result.metadata.get("trace", []):
+                if isinstance(node, dict) and node.get("status") == "error":
+                    print("failed_trace:", node.get("kind"), node.get("detail"))
+            print(
+                "hint: raise POLSIA_LIVE_TIMEOUT, verify the model id, and confirm "
+                "the endpoint is reachable from this machine."
+            )
         return 0 if result.status is RuntimeStatus.COMPLETED else 1
 
     return asyncio.run(run())

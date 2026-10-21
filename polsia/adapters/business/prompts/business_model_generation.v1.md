@@ -21,6 +21,13 @@ a proposed company.
    observe without external research tools.
 4. Initial KPIs must reference the declared goals by exact title.
 5. Include 2-4 initial goals; at least one must validate customer demand.
+6. The supplied BUSINESS MODEL FAMILY is authoritative: keep it unchanged. If
+   it is `<absent>`, infer it from the description and prefer `other` when the
+   evidence is too vague; never default to `saas` just because software is
+   involved.
+7. If the target customer is unknown, set `target_customer` to
+   "unspecified target customer segment" and include a goal to identify the
+   actual segment.
 
 ## Output contract
 

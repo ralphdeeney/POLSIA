@@ -97,6 +97,35 @@ async def test_successful_generation_normalizes_response(api_key_env: None) -> N
     assert provider.supports_tool_calling() is None
 
 
+async def test_tool_followup_maps_to_openai_message_shape(api_key_env: None) -> None:
+    """Strict providers require assistant(tool_calls) then tool(tool_call_id)."""
+    captured: list[httpx.Request] = []
+    provider = _provider([_BODY_OK], captured=captured)
+    call_echo = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "echo", "arguments": json.dumps({"text": "ping"})},
+    }
+    request = _generate_request(
+        messages=[
+            ModelMessage(role="assistant", content="", metadata={"tool_calls": [call_echo]}),
+            ModelMessage(
+                role="tool",
+                content=json.dumps({"ok": True}),
+                metadata={"tool_call_id": "call_1"},
+            ),
+        ]
+    )
+
+    await provider.generate(request)
+
+    payload = json.loads(captured[0].content)
+    assert payload["messages"] == [
+        {"role": "assistant", "content": "", "tool_calls": [call_echo]},
+        {"role": "tool", "content": json.dumps({"ok": True}), "tool_call_id": "call_1"},
+    ]
+
+
 async def test_cost_computed_only_from_pricing(api_key_env: None) -> None:
     provider = _provider(
         [_BODY_OK],
@@ -169,6 +198,33 @@ async def test_unauthorized_status_normalizes_to_auth_error(api_key_env: None) -
         await provider.generate(_generate_request())
 
 
+async def test_provider_error_detail_is_surfaced(api_key_env: None) -> None:
+    provider = _provider([429], config=_config(max_retries=0))
+    with pytest.raises(ProviderUnavailable) as excinfo:
+        await provider.generate(_generate_request())
+    text = str(excinfo.value)
+    assert "status=429" in text
+    assert "nope" in text
+
+
+def test_error_detail_handles_list_shaped_error_body() -> None:
+    response = httpx.Response(
+        429,
+        json=[
+            {
+                "error": {
+                    "code": 429,
+                    "message": "You exceeded your current quota. Please retry in 9h.",
+                    "status": "RESOURCE_EXHAUSTED",
+                }
+            }
+        ],
+    )
+    detail = OpenAICompatibleModelProvider._error_detail(response)
+    assert "exceeded your current quota" in detail
+    assert detail != ""
+
+
 async def test_malformed_payload_normalizes_to_response_error(api_key_env: None) -> None:
     provider = _provider([{"choices": []}])
     with pytest.raises(ProviderResponseError):
@@ -203,6 +259,34 @@ async def test_tool_calls_parsed_from_json_string(api_key_env: None) -> None:
     assert response.tool_calls[0]["name"] == "read_file"
     assert response.tool_calls[0]["arguments"] == {"path": "note.txt"}
     assert response.metadata["tool_calls_reported"] is True
+
+
+async def test_opaque_tool_call_extras_are_preserved(api_key_env: None) -> None:
+    """Gemini thought signatures must survive normalization to be replayed."""
+    signature = {"google": {"thought_signature": "sig-abc"}}
+    body = {
+        "choices": [
+            {
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "extra_content": signature,
+                            "function": {"name": "echo", "arguments": "{}"},
+                        }
+                    ],
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+    }
+    provider = _provider([body])
+    response = await provider.generate(_generate_request())
+    assert response.tool_calls[0]["extra_content"] == signature
 
 
 async def test_tools_and_structured_output_payload_mapping(api_key_env: None) -> None:

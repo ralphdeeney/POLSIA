@@ -24,6 +24,7 @@ import dataclasses
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 from polsia.core.business.entities import BusinessIdea, CompanyBlueprint
@@ -271,6 +272,8 @@ class BlueprintScenarioResult:
     checks: tuple[BlueprintCheck, ...]
     blueprint_digest: str
     latency_ms: float
+    #: Populated only when the generator itself failed (e.g. provider timeout).
+    error: str | None = None
 
     @property
     def failed_checks(self) -> tuple[BlueprintCheck, ...]:
@@ -287,6 +290,7 @@ class BlueprintScenarioResult:
             "latency_ms": round(self.latency_ms, 3),
             "checks": [check.to_dict() for check in self.checks],
             "failed_checks": [check.name for check in self.failed_checks],
+            "error": self.error,
         }
 
 
@@ -561,11 +565,58 @@ async def run_scenario(
     )
 
 
+def _failed_result(
+    scenario: BlueprintScenario, error: str, latency_ms: float
+) -> BlueprintScenarioResult:
+    """A generator failure is a recorded scenario outcome, never a crash.
+
+    This keeps a live run (slow/rate-limited provider) diagnostic: every
+    scenario reports its own error and the rest of the suite still runs.
+    """
+    return BlueprintScenarioResult(
+        scenario=scenario.name,
+        category=scenario.category,
+        passed=False,
+        business_model="",
+        source="",
+        checks=(_check("generator_error", False, error),),
+        blueprint_digest="",
+        latency_ms=latency_ms,
+        error=error,
+    )
+
+
+async def run_scenario_safely(
+    scenario: BlueprintScenario,
+    generator: Any,
+) -> BlueprintScenarioResult:
+    """Run one scenario; convert any generator exception into a failed result."""
+    started = time.perf_counter()
+    try:
+        return await run_scenario(scenario, generator)
+    except Exception as exc:  # noqa: BLE001 - provider/runtime failures are data
+        return _failed_result(
+            scenario, f"{type(exc).__name__}: {exc}", (time.perf_counter() - started) * 1000.0
+        )
+
+
 async def _evaluate(
     generator: Any,
     scenarios: tuple[BlueprintScenario, ...],
+    *,
+    generator_factory: Callable[[], Any] | None = None,
+    on_scenario: Callable[[BlueprintScenarioResult], None] | None = None,
+    generator_label: str | None = None,
+    model_arm: str | None = None,
+    notes: tuple[str, ...] | None = None,
 ) -> BlueprintEvaluationReport:
-    results = [await run_scenario(scenario, generator) for scenario in scenarios]
+    results: list[BlueprintScenarioResult] = []
+    for scenario in scenarios:
+        active = generator_factory() if generator_factory is not None else generator
+        result = await run_scenario_safely(scenario, active)
+        results.append(result)
+        if on_scenario is not None:
+            on_scenario(result)
     total = len(results)
     passed = sum(1 for result in results if result.passed)
     report_payload = [
@@ -578,6 +629,14 @@ async def _evaluate(
         }
         for result in results
     ]
+    if generator_label:
+        label = generator_label
+    elif generator is not None:
+        label = str(getattr(generator, "name", type(generator).__name__))
+    elif generator_factory is not None:
+        label = str(getattr(generator_factory, "__name__", "generator_factory"))
+    else:  # pragma: no cover - defensive
+        label = "unknown"
     return BlueprintEvaluationReport(
         scenarios=results,
         passed=passed,
@@ -586,15 +645,17 @@ async def _evaluate(
         avg_latency_ms=round(sum(result.latency_ms for result in results) / total, 3)
         if total
         else 0.0,
-        generator=str(getattr(generator, "name", type(generator).__name__)),
+        generator=label,
         dataset_fingerprint=dataset_fingerprint(),
         report_digest=_digest(report_payload),
         prompt_versions=_prompt_versions(),
-        model_arm=(
+        model_arm=model_arm
+        or (
             "NOT RUN: no live model provider configured; the model-backed arm is "
             "exercised only with a scripted provider in the test suite"
         ),
-        notes=(
+        notes=notes
+        or (
             "Deterministic assertions only; no model-judge and no fabricated ground truth.",
             "The default arm is offline: no network, no credentials, no external research.",
             "Blueprint quality is asserted structurally; real-world demand remains unvalidated.",
@@ -611,13 +672,34 @@ def _prompt_versions() -> tuple[str, ...]:
 def evaluate_blueprints(
     generator: Any | None = None,
     scenarios: tuple[BlueprintScenario, ...] = SCENARIOS,
+    *,
+    generator_factory: Callable[[], Any] | None = None,
+    on_scenario: Callable[[BlueprintScenarioResult], None] | None = None,
+    generator_label: str | None = None,
+    model_arm: str | None = None,
+    notes: tuple[str, ...] | None = None,
 ) -> BlueprintEvaluationReport:
-    """Run the whole deterministic scenario suite (sync entry point)."""
-    if generator is None:
+    """Run the whole scenario suite (sync entry point).
+
+    ``generator`` is a single instance (deterministic/CI default).
+    ``generator_factory`` builds a fresh instance per scenario, so a slow or
+    rate-limited live provider cannot exhaust one shared budget mid-suite.
+    """
+    if generator is None and generator_factory is None:
         from polsia.adapters.business.deterministic import DeterministicBlueprintGenerator
 
         generator = DeterministicBlueprintGenerator()
-    return asyncio.run(_evaluate(generator, scenarios))
+    return asyncio.run(
+        _evaluate(
+            generator,
+            scenarios,
+            generator_factory=generator_factory,
+            on_scenario=on_scenario,
+            generator_label=generator_label,
+            model_arm=model_arm,
+            notes=notes,
+        )
+    )
 
 
 __all__ = [
@@ -629,4 +711,5 @@ __all__ = [
     "dataset_fingerprint",
     "evaluate_blueprints",
     "run_scenario",
+    "run_scenario_safely",
 ]
